@@ -1,0 +1,2 @@
+2026-11-08T09:14:03.000000000Z /docker-entrypoint.sh: Configuration complete; ready for start up
+2026-11-08T09:20:11.500000000Z 172.17.0.1 - - [08/Nov/2026:09:20:11 +0000] "GET / HTTP/1.1" 200 615 "-" "curl/8.5.0"

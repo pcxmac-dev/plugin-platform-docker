@@ -1,0 +1,2 @@
+2026-11-08T09:14:03.100000000Z 2026/11/08 09:14:03 [notice] 1#1: nginx/1.27.2
+2026-11-08T09:20:12.000000000Z 2026/11/08 09:20:12 [error] 29#29: *2 open() "/usr/share/nginx/html/favicon.ico" failed (2: No such file or directory)

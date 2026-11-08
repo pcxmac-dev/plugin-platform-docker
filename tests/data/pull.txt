@@ -1,0 +1,6 @@
+1.28: Pulling from library/nginx
+b2a1c3d4e5f6: Pull complete
+c3d4e5f6a7b8: Pull complete
+Digest: sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+Status: Downloaded newer image for nginx:1.28
+docker.io/library/nginx:1.28

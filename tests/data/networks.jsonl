@@ -1,0 +1,4 @@
+{"CreatedAt":"2026-11-08 06:58:01.102938475 +0000 UTC","Driver":"bridge","ID":"0d4b6f8a1c3e5d7f9b1a3c5e7d9f1b3a5c7e9d1f3b5a7c9e1d3f5b7a9c1e3d5f","IPv4":"true","IPv6":"false","Internal":"false","Labels":"","Name":"bridge","Scope":"local"}
+{"CreatedAt":"2026-10-14 08:00:00.000000000 +0000 UTC","Driver":"host","ID":"1e5c7a9b2d4f6e8a0c2e4f6a8b0d2f4a6c8e0a2c4e6f8a0b2d4f6a8c0e2a4c6e","IPv4":"true","IPv6":"false","Internal":"false","Labels":"","Name":"host","Scope":"local"}
+{"CreatedAt":"2026-10-14 08:00:00.000000000 +0000 UTC","Driver":"null","ID":"2f6d8b0c3e5a7f9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b","IPv4":"true","IPv6":"false","Internal":"false","Labels":"","Name":"none","Scope":"local"}
+{"CreatedAt":"2026-11-05 18:01:59.554433221 +0000 UTC","Driver":"bridge","ID":"3a7e9c1d4f6b8a0e2c4f6b8d0a2e4c6f8b0d2a4e6c8f0b2d4a6e8c0f2b4d6a8e","IPv4":"true","IPv6":"true","Internal":"false","Labels":"liminal=network","Name":"liminal","Scope":"local"}

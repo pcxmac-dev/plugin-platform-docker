@@ -1,0 +1,2 @@
+{"Current":true,"Description":"Current DOCKER_HOST based configuration","DockerEndpoint":"npipe:////./pipe/docker_engine","Error":"","Name":"default"}
+{"Current":false,"Description":"the VPS","DockerEndpoint":"ssh://liminal@vps.example.net","Error":"","Name":"vps"}
