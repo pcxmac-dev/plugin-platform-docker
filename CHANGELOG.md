@@ -2,6 +2,8 @@
 
 ## 0.1.0 (2026-11-08)
 
+Its icon is Docker's whale with its containers, drawn in the library's line (liminal-libs 1.33.0's `docker`; the user: "for the docker and kubernetes plugins, use their respective logos"). Needs liminal-libs>=1.33.0.
+
 The first release (the user: "and then i need a kubernetes and docker plugin for platform"): Docker's engines as a
 machine plugin of the platform, on liminal-libs 1.30.0's `docker.py`.
 

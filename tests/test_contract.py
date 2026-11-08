@@ -13,10 +13,10 @@ def test_every_plugin_here_conforms_to_the_class_contract():
     found = assert_module_conforms(module)
     assert found and all(p.api == "2.1" and not p.is_record for p in found)
     assert {p.SYSTEM for p in found} == {"platform"} and {p.KIND for p in found} == {"machine"}
-    assert {p.name for p in found} == {"docker"} and {p.ICON for p in found} == {"database"}
+    assert {p.name for p in found} == {"docker"} and {p.ICON for p in found} == {"docker"}
 
 
 def test_its_icon_is_one_the_platforms_page_draws():
     """The tray draws the icon by its name in the library's icons.js: a name it does not have draws nothing."""
     drawn = set(re.findall(r"^\s*([a-z]+):\s*'", (STATIC / "icons.js").read_text(encoding="utf-8"), re.M))
-    assert module.MACHINE.ICON in drawn  # icons.js has no box (2026-11-08): the database stands in
+    assert module.MACHINE.ICON in drawn  # Docker's whale with its containers, by the user's ask

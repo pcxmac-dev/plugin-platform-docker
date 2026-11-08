@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 # the library it plugs into (the machine kind: liminal_libs.machines, plugin API 2.1; docker.instances and the WSL
 # plugins' engines, a stopped distribution never started to look since 1.28.0)
-dependencies = ["liminal-libs>=1.30.0"]
+dependencies = ["liminal-libs>=1.33.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

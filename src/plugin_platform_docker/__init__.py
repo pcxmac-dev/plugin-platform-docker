@@ -179,7 +179,7 @@ class DockerPlugin(MachinePlugin):
              "restarted or removed, an image pulled or removed, once confirmed")
     api = "2.1"
     order = 705
-    ICON = "database"  # icons.js has no box: the database is the nearest (what an engine holds)
+    ICON = "docker"  # Docker's whale with its containers (liminal-libs 1.33.0's icons.js)
     HOOKS = (*MachinePlugin.HOOKS, "choose_engine", "refresh", "container", "remove_container", "logs", "pull", "remove_image")
 
     def __init__(self, machines=None, find=None, runner=None, wsl=None, env=None, clock=None, wall=None):
