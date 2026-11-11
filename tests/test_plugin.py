@@ -44,6 +44,7 @@ class FakeEngine:
         self.containers = rows("ps.jsonl") if containers is None else containers
         self.images = rows("images.jsonl") if images is None else images
         self.volumes, self.networks = rows("volumes.jsonl"), rows("networks.jsonl")
+        self.search: dict[str, list[dict]] = {}  # what `docker search TERM` lists, by term (0.2.0)
         self.asked: list[list[str]] = []
 
     def answer(self, args):
@@ -52,6 +53,8 @@ class FakeEngine:
             return (0, recorded("version.json"), "") if self.daemon else (1, recorded("version-no-daemon.json"), NO_DAEMON)
         if not self.daemon:
             return 1, "", NO_DAEMON
+        if args[0] == "search":  # search --no-trunc --limit N TERM --format {{json .}}
+            return 0, "".join(json.dumps(r) + "\n" for r in self.search.get(args[4], [])), ""
         listing = {"ps": self.containers, "images": self.images, "volume": self.volumes, "network": self.networks}
         if args[0] in listing:
             return 0, "".join(json.dumps(r) + "\n" for r in listing[args[0]]), ""
@@ -98,6 +101,14 @@ class Docker:
         while args[:1] in (["--context"], ["-H"]):
             key, args = (args[1] if args[0] == "--context" else "host"), args[2:]
         return self.engines[key].answer(args)
+
+    def stream(self, argv, timeout, line):
+        """The streaming runner's stand-in (a pull as a job, 0.2.0): the same answer, its output given line by line."""
+        code, out, err = self(argv, timeout)
+        for s in out.splitlines():
+            if s.strip():
+                line(s)
+        return code, err
 
 
 def u16(text: str) -> bytes:
@@ -150,8 +161,22 @@ def plugin(state="Stopped", engine=None, distribution="Liminal-Ubuntu", clock=No
     wsl = FakeWsl(state=state, name=distribution)
     ubuntu = type("Distro", (Ubuntu,), {"distribution": distribution})(wsl=Wsl(runner=wsl))
     run = Docker(wsl=engine or FakeEngine())
-    p = DockerPlugin(machines=[ubuntu], wsl=Wsl(runner=wsl), runner=run, env={}, **({"clock": clock} if clock else {}))
+    p = DockerPlugin(machines=[ubuntu], wsl=Wsl(runner=wsl), runner=run, streamer=run.stream, env={},
+                     **({"clock": clock} if clock else {}))
     return p, run, wsl
+
+
+SEARCH_FORMS = ("search", "details", "detail")  # 0.2.0: the image search's, beside the engine's
+
+
+def engine_tables(s: dict) -> list[dict]:
+    """The tables of the engines (0.2.0: after the image search's, which comes first)."""
+    assert s["tables"][0]["title"].startswith("Find an image")
+    return s["tables"][1:]
+
+
+def engine_forms(s: dict) -> list[dict]:
+    return [f for f in s["forms"] if f["id"] not in SEARCH_FORMS]
 
 
 def at_local(*when, fmt="%b %d %H:%M") -> str:
@@ -165,11 +190,11 @@ def test_docker_in_a_stopped_distribution_is_never_asked_and_the_plugin_says_why
     assert s["why"] == ("no Docker engine can be read: wsl-ubuntu: Liminal-Ubuntu is stopped, and a look never starts it. "
                         "Start the distribution (from its WSL plugin's terminal, say) and Docker in it is read")
     assert run.calls == [] and booted(wsl.calls) == []  # only `wsl --list --verbose`: nothing booted
-    engines, containers = s["tables"]
+    engines, containers = engine_tables(s)
     assert engines["rows"] == [[{"text": "wsl-ubuntu", "sub": "the wsl-ubuntu plugin's"}, "Docker in Liminal-Ubuntu under WSL 2", "–",
                                 {"text": "stopped", "sub": "Liminal-Ubuntu is stopped, and a look never starts it"}]]
     assert containers["empty"] == "wsl-ubuntu is not read: Liminal-Ubuntu is stopped, and a look never starts it"
-    assert s["forms"] == [] and "options" not in engines  # one engine: nothing to choose
+    assert engine_forms(s) == [] and "options" not in engines  # one engine: nothing to choose
     with pytest.raises(ValueError, match="wsl-ubuntu is not asked now: Liminal-Ubuntu is stopped"):
         p.ask("container", "wsl-ubuntu", "web", "stop")  # a change does not start it either
     with pytest.raises(ValueError, match="not asked now"):
@@ -188,8 +213,8 @@ def test_the_engines_and_the_shown_ones_containers_images_volumes_and_networks()
     assert (s["engines"], s["shown"]) == ("wsl-ubuntu: running 29.9.3", "wsl-ubuntu (Docker in Liminal-Ubuntu under WSL 2)")
     assert s["engineVersion"] == "29.9.3 · linux/amd64 · client 29.9.3"
     assert (s["containers"], s["images"], s["volumes"], s["networks"]) == ("2 running of 3", "4", "2", "4")
-    assert [t["title"] for t in s["tables"]] == ["Docker engines", "Containers", "Images", "Volumes", "Networks"]
-    engines, containers, images, volumes, networks = s["tables"]
+    assert [t["title"] for t in s["tables"]] == ["Find an image", "Docker engines", "Containers", "Images", "Volumes", "Networks"]
+    engines, containers, images, volumes, networks = engine_tables(s)
     assert engines["rows"][0][2:] == [{"text": "29.9.3", "sub": "client 29.9.3 · linux/amd64"}, "running"]
     assert containers["note"] == "on wsl-ubuntu (Docker in Liminal-Ubuntu under WSL 2)"
     assert [c["title"] for c in containers["columns"]] == ["Container", "Image", "State", "Ports", "Created", "Log", "Change", "Remove"]
@@ -215,10 +240,11 @@ def test_the_engines_and_the_shown_ones_containers_images_volumes_and_networks()
                                 [{"text": "host", "sub": "1e5c7a9b2d4f"}, "host", "local", "0", "–"],
                                 [{"text": "liminal", "sub": "3a7e9c1d4f6b"}, "bridge", "local", "1", "IPv6"],
                                 [{"text": "none", "sub": "2f6d8b0c3e5a"}, "null", "local", "0", "–"]]
-    forms = {f["id"]: f for f in s["forms"]}
+    forms = {f["id"]: f for f in engine_forms(s)}
     assert list(forms) == ["container", "remove", "logs", "rmi", "pull"]
-    for f in s["forms"]:  # the fields are the hook's arguments, in order; the engine shown fixed in each
-        assert [x["name"] for x in f["fields"]] == list(inspect.signature(getattr(p, f["hook"])).parameters)
+    for f in engine_forms(s):  # the fields are the hook's arguments, in order; the engine shown fixed in each (a job's
+        # `log`, the platform's panel, is no field: 0.2.0)
+        assert [x["name"] for x in f["fields"]] == [n for n in inspect.signature(getattr(p, f["hook"])).parameters if n != "log"]
         assert f["fields"][0] == {"name": "engine", "label": "Engine", "type": "fixed", "value": "wsl-ubuntu"}
     assert [c["value"] for c in forms["container"]["fields"][1]["choices"]] == ["mail-example-com", "web", "old-job"]
     assert forms["remove"]["confirm"]["danger"] is True and forms["remove"]["fields"][2]["type"] == "accept"
@@ -279,7 +305,7 @@ def test_a_log_read_and_images_pulled_and_removed():
     assert pulled == {"said": "nginx:1.28 pulled on wsl-ubuntu", "ok": True,
                       "lines": ["Digest: sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
                                 "Status: Downloaded newer image for nginx:1.28", "docker.io/library/nginx:1.28"]}
-    assert ["pull", "nginx:1.28"] in engine.asked and "nginx:1.28" in [r[0]["text"] for r in p.status()["tables"][2]["rows"]]
+    assert ["pull", "nginx:1.28"] in engine.asked and "nginx:1.28" in [r[0]["text"] for r in engine_tables(p.status())[2]["rows"]]
     for wrong in ("--help", "nginx latest", "", None):
         with pytest.raises(ValueError, match="not an image's name"):
             p.ask("pull", "wsl-ubuntu", wrong)
@@ -304,7 +330,7 @@ def test_several_engines_one_shown_and_chosen_on_the_page():
     p = DockerPlugin(find=lambda: found, runner=run, wsl=Wsl(runner=wsl))
     s = p.status()
     assert wsl.calls == []  # no engine through WSL: WSL is not asked
-    engines = s["tables"][0]
+    engines = engine_tables(s)[0]
     assert [r[0] for r in engines["rows"]] == [{"text": "local", "sub": "the docker command"}, {"text": "context:vps", "sub": "a docker context"},
                                                {"text": "host", "sub": "LIMINAL_DOCKER_HOST"}]
     assert engines["rows"][0][3] == {"text": "not answering", "sub": "its engine is not running (the docker command answers, its daemon does not)"}
@@ -313,22 +339,24 @@ def test_several_engines_one_shown_and_chosen_on_the_page():
     assert [c["value"] for c in group["choices"]] == ["local", "context:vps", "host"]
     assert ["docker", "--context", "vps", "version", "--format", "{{json .}}"] in run.calls
     assert ["docker", "-H", "tcp://10.0.0.5:2376", "ps", "-a", "--no-trunc", "--format", "{{json .}}"] not in run.calls  # not shown
-    containers, images = s["tables"][1], s["tables"][2]
+    containers, images = engine_tables(s)[1], engine_tables(s)[2]
     assert containers["rows"] == [] and containers["empty"] == "No container on context:vps." and "actions" not in containers
-    assert images["empty"] == "No image on context:vps." and [f["id"] for f in s["forms"]] == ["pull"]
+    assert images["empty"] == "No image on context:vps." and [f["id"] for f in engine_forms(s)] == ["pull"]
     assert s["engines"] == ("local: its engine is not running (the docker command answers, its daemon does not); "
                             "context:vps: running 29.9.3; host: running 29.9.3")
     chosen = p.ask("choose_engine", "host")
     assert chosen["said"] == "showing host's containers, images, volumes and networks" and chosen["ok"]
     s = p.status()
-    assert s["shown"] == "host (tcp://10.0.0.5:2376)" and len(s["tables"][1]["rows"]) == 3 and s["tables"][0]["options"][0]["value"] == "host"
+    assert s["shown"] == "host (tcp://10.0.0.5:2376)" and len(engine_tables(s)[1]["rows"]) == 3 and engine_tables(s)[0]["options"][0]["value"] == "host"
     assert ["docker", "-H", "tcp://10.0.0.5:2376", "ps", "-a", "--no-trunc", "--format", "{{json .}}"] in run.calls
     with pytest.raises(ValueError, match="no Docker engine named 'nope' here: local, context:vps, host"):
         p.ask("choose_engine", "nope")
     p.ask("choose_engine", "local")
     s = p.status()
     assert s["valid"] is True and s["problem"] == "local is not read: its engine is not running (the docker command answers, its daemon does not)"
-    assert s["tables"][1]["empty"].startswith("local is not read: ") and s["forms"] == []
+    assert engine_tables(s)[1]["empty"].startswith("local is not read: ")
+    # the shown one does not answer: a found image's Pull goes to the first that does (0.2.0), the shown one's forms none
+    assert [(f["id"], f["fields"][0]["value"]) for f in engine_forms(s)] == [("pull", "context:vps")]
     p.detach()
     assert p.status()["shown"].startswith("local")  # kept until the platform restarts
 
@@ -337,7 +365,8 @@ def test_no_engine_at_all_is_not_valid_and_says_how_to_have_one():
     p = DockerPlugin(find=lambda: [], runner=Docker(), wsl=Wsl(runner=FakeWsl()))
     s = p.status()
     assert (s["present"], s["valid"], s["why"], s["summary"]) == (False, False, dk.NO_ENGINE, "no Docker engine here")
-    assert len(s["tables"]) == 1 and s["tables"][0]["rows"] == [] and s["forms"] == [] and not p.present()
+    assert [t["title"] for t in s["tables"]] == ["Find an image", "Docker engines"] and engine_tables(s)[0]["rows"] == []
+    assert engine_forms(s) == [] and not p.present()  # the search is still offered: Quay, Artifact Hub, the picks
     assert dk.NO_ENGINE == "no Docker engine here: install Docker Desktop, or Docker inside a WSL distribution through the WSL plugins"
     q = DockerPlugin(machines=[], runner=Docker(), wsl=Wsl(runner=FakeWsl()), env={})  # the library's docker.instances itself
     assert q.status()["why"] == dk.NO_ENGINE  # no docker on PATH, no host, no plugin's engine
@@ -346,7 +375,7 @@ def test_no_engine_at_all_is_not_valid_and_says_how_to_have_one():
 def test_a_distribution_not_liminals_and_a_plugin_that_fails_are_not_asked():
     p, run, wsl = plugin("Running", distribution="Ubuntu")  # a WSL plugin pointed at the user's own Ubuntu
     s = p.status()
-    assert s["valid"] is False and s["tables"][0]["rows"][0][3] == {"text": "not asked", "sub": "Ubuntu is not Liminal's: nothing is asked inside it"}
+    assert s["valid"] is False and engine_tables(s)[0]["rows"][0][3] == {"text": "not asked", "sub": "Ubuntu is not Liminal's: nothing is asked inside it"}
     assert run.calls == []
 
     class Failing(Ubuntu):
@@ -356,7 +385,7 @@ def test_a_distribution_not_liminals_and_a_plugin_that_fails_are_not_asked():
             raise RuntimeError("wsl is broken")
     q = DockerPlugin(machines=[Failing(wsl=Wsl(runner=FakeWsl()))], runner=Docker(), wsl=Wsl(runner=FakeWsl()), env={})
     s = q.status()
-    assert s["tables"][0]["rows"][0][3] == {"text": "not asked", "sub": "wsl-fedora: RuntimeError: wsl is broken"}
+    assert engine_tables(s)[0]["rows"][0][3] == {"text": "not asked", "sub": "wsl-fedora: RuntimeError: wsl is broken"}
 
 
 def test_what_was_read_is_kept_nothing_runs_on_its_own_and_detached_it_is_forgotten():
@@ -369,7 +398,7 @@ def test_what_was_read_is_kept_nothing_runs_on_its_own_and_detached_it_is_forgot
     interface = p.attach(App(), None)
     assert threading.active_count() == before and run.calls == []  # attached: nothing asked yet, no thread of its own
     assert set(interface["hooks"]) == {"present", "status", "choose_engine", "refresh", "container", "remove_container", "logs",
-                                       "pull", "remove_image"}
+                                       "pull", "remove_image", "search", "details", "clear_search"}
     p.status()
     n = len(run.calls)
     t[0] += 29

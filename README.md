@@ -20,6 +20,15 @@ library's icons.js has no box yet) over the library's `docker.py`:
   otherwise): its containers (name, image, state, ports, when made; Liminal's own services marked), images (size, when
   made, the containers made from each), volumes (driver, the containers using each) and networks (driver, how many
   containers are on each), each a table.
+- **Find an image** for anything (0.2.0): the words typed in the search box above the first table are read (roles,
+  products, features and qualities it knows: "nginx web server", "postfix mail server with anti-spam"; anything else by its
+  own words: "postgres", "home assistant") and asked at once of Docker Hub through the engine that answers (`docker search`,
+  the documented route; with none answering, Docker Hub is said as not searched), Quay.io and Artifact Hub (their documented
+  APIs), with Liminal's picks for web servers, reverse proxies and mail servers. Each result says what it provides, where
+  it comes from and by whom, and why it ranks where it does; **Details** reads its description, its README's first lines
+  (as plain text) and its newest tags with their dates, sizes and platforms; **Pull…** pulls it as a job, docker's lines
+  shown as they come (liminal-platform 0.19.0). A compose stack (mailcow, Mailu) is listed with its install page, never
+  pulled. Docker Hub's website search (undocumented) is asked only when the setting DOCKER_HUB_WEBSITE_SEARCH is on.
 - **The changes**, each through a form the page confirms first: a container started, stopped (given 20 s to end on its
   own, then killed) or restarted; a container removed (its image and volumes stay; a running one only once accepted
   again: it is killed first); an image pulled; an image removed (one a container was made from only once accepted
@@ -41,10 +50,11 @@ listings, a restart, an image's removal and a log with its error stream).
 
 ## Its hooks
 
-`present` (an engine is known), `status` (the summary, the facts, `tables`, `forms`, `actions`), `choose_engine(engine)`
+`present` (an engine is known), `status` (the summary, the facts, `tables`, `forms`, `actions`), `search(query, where)`
+(images for anything, kept for the page's table), `details(image)`, `clear_search()`, `choose_engine(engine)`
 (the engine the tables show), `refresh()` (every engine read again now), `container(engine, name, action)` (`action`:
 `start`, `stop` or `restart`), `remove_container(engine, name, force)`, `logs(engine, name, lines)` (100 lines unless
-given, at most 2,000), `pull(engine, image)`, `remove_image(engine, image, force)`. A refusal that `force` accepts
+given, at most 2,000), `pull(engine, image, log)` (a job: `log` the platform's panel), `remove_image(engine, image, force)`. A refusal that `force` accepts
 names it (`accept`), and the page asks a second confirmation before sending it.
 
 ## From the command line
@@ -58,6 +68,8 @@ python -m plugin_platform_docker stop wsl-ubuntu web        # start, restart ali
 python -m plugin_platform_docker remove wsl-ubuntu web [--force]
 python -m plugin_platform_docker pull wsl-ubuntu nginx:1.27
 python -m plugin_platform_docker rmi wsl-ubuntu nginx:1.27 [--force]
+python -m plugin_platform_docker search postfix mail server with anti-spam [--where quay]
+python -m plugin_platform_docker details mailserver/docker-mailserver
 ```
 
 An engine is named as the Docker engines table names it: `local`, `context:<name>`, `host`, or a WSL plugin's name.

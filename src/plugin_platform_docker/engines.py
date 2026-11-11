@@ -9,12 +9,14 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 from datetime import datetime, timezone
 
 from liminal_libs.docker import Docker, DockerError, Instance
 from liminal_libs.proc import no_window
 
 READ_TIMEOUT_S = 60.0  # a listing's command at most
+PULL_S = 1800.0  # a pull at most (a large image over a slow line), its lines shown as they come
 STOP_S = 20  # seconds a container is given to end on its own before it is killed
 LINE_CHARS = 2000  # a log line longer than this is cut
 UTF8_WSL = {"WSL_UTF8": "1"}  # wsl's own words in UTF-8 (UTF-16 otherwise)
@@ -53,6 +55,42 @@ def run(args, timeout: float) -> tuple[int, str, str]:
     return done.returncode, text(done.stdout), text(done.stderr)
 
 
+def stream(args, timeout: float, line) -> tuple[int, str]:
+    """`args` run as `run` runs them (windowless, no standard input), each line it prints given to `line` as it comes (a
+    pull's progress, followed on the platform's page): (exit code, what it wrote to its errors). Running past `timeout`,
+    it is killed: a DockerError."""
+    args = [str(a) for a in args]
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                env={**os.environ, **UTF8_WSL}, **no_window())
+    except OSError as e:
+        raise DockerError(f"{program(args[0]) if args else 'the command'} could not run: {e}") from None
+    errors: list[bytes] = []
+    reader = threading.Thread(target=lambda: errors.append(proc.stderr.read()), name="docker-stream-errors", daemon=True)
+    reader.start()
+    killed = threading.Event()
+
+    def kill() -> None:
+        killed.set()
+        proc.kill()
+
+    timer = threading.Timer(timeout, kill)
+    timer.daemon = True
+    timer.start()
+    try:
+        for raw in iter(proc.stdout.readline, b""):
+            got = text(raw).rstrip("\r\n")
+            if got.strip():
+                line(got[:LINE_CHARS])
+        proc.wait()
+    finally:
+        timer.cancel()
+        reader.join(5)
+    if killed.is_set():
+        raise DockerError(f"{said(args)} took more than {timeout:g} s: stopped")
+    return proc.returncode, text(b"".join(errors))
+
+
 def program(path) -> str:
     """A program by its name: C:/Windows/System32/wsl.exe as wsl."""
     name = os.path.basename(str(path))
@@ -72,14 +110,34 @@ class Engine(Docker):
     container restarted, an image removed, a container's last log lines with what it wrote to its errors (docker logs
     gives those on its own standard error)."""
 
-    def __init__(self, *args, runner=None, **kw):
+    def __init__(self, *args, runner=None, streamer=None, **kw):
         self.last: tuple[int, str, str] = (0, "", "")  # the last command's exit code, output and errors
         given = runner if runner is not None else run
+        self._stream = streamer if streamer is not None else stream  # (args, timeout, line) -> (code, errors)
 
         def recorded(argv, timeout):
             self.last = given(argv, timeout)
             return self.last
         super().__init__(*args, runner=recorded, **kw)
+
+    def line(self, *args: str) -> list[str]:
+        """The command line the library's `_run` gives `args` (its prefix through WSL, its context or its host)."""
+        return [self.command, *self.argv[1:], *(("--context", self.context) if self.context else ()),
+                *(("-H", self.host) if self.host else ()), *args]
+
+    def pull_streaming(self, ref: str, log, timeout: float = PULL_S) -> str:
+        """`docker pull ref`, each line it prints given to `log` as it comes (a job's panel); what it printed. Refused,
+        or failed: a DockerError in docker's own words."""
+        self.log(f"docker: pulling {ref} on {self.where}")
+        printed: list[str] = []
+
+        def each(s: str) -> None:
+            printed.append(s)
+            log(s)
+        code, errors = self._stream(self.line("pull", ref), timeout, each)
+        if code != 0:
+            raise DockerError((errors or "\n".join(printed[-3:]) or f"docker pull {ref} failed ({code})").strip())
+        return "\n".join(printed)
 
     def rows(self, *args: str, timeout: float = READ_TIMEOUT_S) -> list[dict]:
         """A listing's rows: docker's JSON objects, one a line (a line that is not one is left out)."""

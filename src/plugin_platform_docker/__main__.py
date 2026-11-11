@@ -14,7 +14,8 @@ from liminal_libs.docker import DockerError
 from . import MACHINE, Refusal
 
 USAGE = ("python -m plugin_platform_docker status | engines | containers|images|volumes|networks [ENGINE] | logs ENGINE NAME [LINES]"
-         " | start|stop|restart ENGINE NAME | remove ENGINE NAME [--force] | pull ENGINE IMAGE | rmi ENGINE IMAGE [--force]")
+         " | start|stop|restart ENGINE NAME | remove ENGINE NAME [--force] | pull ENGINE IMAGE | rmi ENGINE IMAGE [--force]"
+         " | search WORDS... [--where all|docker-hub|quay|artifact-hub|catalog] | details IMAGE")
 TABLES = {"containers": "Containers", "images": "Images", "volumes": "Volumes", "networks": "Networks"}
 
 
@@ -72,7 +73,21 @@ def main(argv: list[str] | None = None) -> int:
         if what == "remove" and len(rest) == 2:
             return said(MACHINE.remove_container(rest[0], rest[1], force))
         if what == "pull" and len(rest) == 2:
-            return said(MACHINE.pull(rest[0], rest[1]))
+            return said(MACHINE.pull(rest[0], rest[1], log=print))  # docker's lines as they come
+        if what == "search" and rest:
+            where = "all"
+            if "--where" in rest:
+                k = rest.index("--where")
+                where = rest[k + 1] if k + 1 < len(rest) else "all"
+                rest = rest[:k] + rest[k + 2:]
+            said(MACHINE.search(" ".join(rest), where))
+            table = MACHINE.status()["tables"][0]
+            print(table.get("note", ""))
+            for k, row in enumerate(table["rows"], 1):
+                print(f"{k:>2}. " + "  ".join(x for x in (flat(c) for c in row[:3]) if x))
+            return 0
+        if what == "details" and len(rest) == 1:
+            return said(MACHINE.details(rest[0]))
         if what == "rmi" and len(rest) == 2:
             return said(MACHINE.remove_image(rest[0], rest[1], force))
     except Refusal as e:

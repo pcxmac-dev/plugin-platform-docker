@@ -26,14 +26,26 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from liminal_libs import docker
+from liminal_libs.apps import EnvironmentLogin
 from liminal_libs.docker import DockerError, Instance
 from liminal_libs.machines.plugin import MachinePlugin, liminal_scoped
 from liminal_libs.machines.wsl import Wsl
+from liminal_libs.sources.keys import KeyVar
 
+from .catalog import PICKS
 from .engines import (STOP_S, Engine, anonymous, broken, created, image_ref, liminal_service, local_time, names, ports,
                       short, span, users_of, words, wsl_target)
+from .search import Outcome, Searcher, where_choices
+from .sources import SOURCES, Http, canonical, pull_ref, registry_of
+from .sources import shown as shown_ref
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+WEBSITE_VAR = "DOCKER_HUB_WEBSITE_SEARCH"  # the user's setting: Docker Hub's website search too (undocumented; off)
+KEYS = (KeyVar(WEBSITE_VAR, label="Docker Hub's website search", secret=False,
+               hint=("optional: on to also ask Docker Hub's website search (undocumented: its ranking, badges and pull counts "
+                     "are the best, but Docker's terms allow automated access only through documented APIs; off unless set)")),)
+FOUND_ROWS = 25  # a search's results shown
+DESCRIPTION_CHARS = 220  # a result's description in its row (Details gives it whole)
 READ_S = 30.0  # what was read is kept this long: the platform's page asks every few seconds; a change reads again at once
 LOG_LINES = 100  # a container's last lines read unless more are asked
 MAX_LOG_LINES = 2000
@@ -124,6 +136,9 @@ class _Runtime:
         self.reading_lock = threading.Lock()  # one read at a time: a second asker waits, then takes it
         self.reading: Reading | None = None
         self.choice: str | None = None
+        self.searching = threading.Lock()  # one image search at a time (0.2.0)
+        self.searcher: Searcher | None = None  # its requests' turns and cache, made at the first search
+        self.found: Outcome | None = None  # the last search's results, until the next, Clear, or the plugin detached
 
 
 def cell(text, sub=None):
@@ -176,13 +191,17 @@ class DockerPlugin(MachinePlugin):
     title = "Docker"
     about = ("Every Docker engine here (this machine's, its contexts, a host, Docker inside Liminal's WSL distributions): "
              "each one's version and state, its containers, images, volumes and networks; a container started, stopped, "
-             "restarted or removed, an image pulled or removed, once confirmed")
+             "restarted or removed, an image pulled or removed, once confirmed; an image for anything found on Docker Hub "
+             "(through a running engine), Quay and Artifact Hub, described, and pulled with its progress shown")
     api = "2.1"
     order = 705
     ICON = "docker"  # Docker's whale with its containers (liminal-libs 1.33.0's icons.js)
-    HOOKS = (*MachinePlugin.HOOKS, "choose_engine", "refresh", "container", "remove_container", "logs", "pull", "remove_image")
+    HOOKS = (*MachinePlugin.HOOKS, "choose_engine", "refresh", "container", "remove_container", "logs", "pull", "remove_image",
+             "search", "details", "clear_search")
+    JOB_HOOKS = ("pull",)  # hooks the platform may run as a job, their lines followed on the page (liminal-platform 0.19.0)
+    keys = KEYS  # its settings, kept through the platform's login (the website search's switch)
 
-    def __init__(self, machines=None, find=None, runner=None, wsl=None, env=None, clock=None, wall=None):
+    def __init__(self, machines=None, find=None, runner=None, wsl=None, env=None, clock=None, wall=None, http=None, streamer=None):
         self._given = machines  # the machine plugins whose engines count (a test's); else the platform's enabled ones
         self._find = find  # () -> the engines (docker.Instance): docker.instances over those plugins unless given
         self._runner = runner  # (args, timeout) -> (code, out, err): engines.run (windowless) unless given
@@ -190,6 +209,8 @@ class DockerPlugin(MachinePlugin):
         self._env = env  # the variables docker.instances reads (LIMINAL_DOCKER_*): this process's unless given
         self._clock = clock or time.monotonic
         self._wall = wall or time.time
+        self._http = http  # the registries' requests (sources.Http; a test's stand-in opener inside): made at the first search
+        self._streamer = streamer  # (args, timeout, line) -> (code, errors): engines.stream (a pull's lines) unless given
         self._rt = _Runtime()
 
     # -- the engines ---------------------------------------------------------------------------------------
@@ -242,7 +263,10 @@ class DockerPlugin(MachinePlugin):
         return "", d.name, False
 
     def _engine(self, i: Instance) -> Engine:
-        return Engine.for_instance(i, runner=self._runner)
+        engine = Engine.for_instance(i, runner=self._runner)
+        if self._streamer is not None:
+            engine._stream = self._streamer
+        return engine
 
     def _probe(self, i: Instance, states: dict, plugins: set[str]) -> Seen:
         why, distribution, stopped = self._gate(i, states, plugins)
@@ -292,8 +316,14 @@ class DockerPlugin(MachinePlugin):
             self._rt.reading = None
 
     def detach(self) -> None:
-        """Detached (the platform ending, the plugin turned off): what it read goes; nothing of its own was running."""
+        """Detached (the platform ending, the plugin turned off): what it read goes, the last search's results and what
+        the registries answered too; nothing of its own was running."""
         self._forget()
+        with self._rt.lock:
+            self._rt.found = None
+            searcher, self._rt.searcher = self._rt.searcher, None
+        if searcher is not None:
+            searcher.http.forget()
         super().detach()
 
     # -- the hooks -----------------------------------------------------------------------------------------
@@ -319,8 +349,14 @@ class DockerPlugin(MachinePlugin):
         out: dict = {"present": bool(r.engines), "summary": self._summary(r, shown), "valid": bool(answering),
                      "why": "" if answering else self._why(r)}
         out.update(self._facts(r, shown))
-        out["tables"] = self._tables(r, shown)
-        out["forms"] = self._forms(shown, r.listing) if shown is not None and shown.answering and r.listing else []
+        with self._rt.lock:
+            found = self._rt.found
+        puller = self._puller(r)
+        out["tables"] = [self._found_table(found, puller)] + self._tables(r, shown)
+        engine_forms = self._forms(shown, r.listing) if shown is not None and shown.answering and r.listing else []
+        if puller is not None and not any(f["id"] == "pull" for f in engine_forms):  # the engine shown is not the one answering
+            engine_forms.append(self._pull_form(puller.name))
+        out["forms"] = self._search_forms(found, puller) + engine_forms
         out["actions"] = [{"hook": "refresh", "args": [], "title": "Read again",
                            "note": f"asks every engine again now (what was read is kept {READ_S:g} s)"}]
         trouble = [f"{shown.name}'s {kind} could not be read: {why}" for kind, why in (r.listing.problems.items() if r.listing else ())]
@@ -533,16 +569,103 @@ class DockerPlugin(MachinePlugin):
                                       "words": ("The image {image} is removed from {engine} (docker rmi); another tag of the same image "
                                                 "keeps it. Pulled again, it comes back."),
                                       "yes": "Remove", "danger": True}})
-        forms.append({"id": "pull", "hook": "pull", "title": "Pull an image",
-                      "note": "From its registry: Docker Hub unless its name says another (ghcr.io/..., quay.io/...).",
-                      "fields": [engine, {"name": "image", "label": "Image", "type": "text", "required": True,
-                                          "placeholder": "nginx:1.27, ghcr.io/owner/name:tag", "note": "its tag after a colon; latest when none"}],
-                      "submit": "Review",
-                      "confirm": {"title": "Pull {image} on {engine}?",
-                                  "words": ("{engine} downloads {image} from its registry (Docker Hub unless the name says another): a "
-                                            "large image takes minutes, and the page waits for it. An image of the same name is "
-                                            "replaced by the newer one; a container keeps the one it was made from."),
-                                  "yes": "Pull"}})
+        forms.append(DockerPlugin._pull_form(shown.name))
+        return forms
+
+    @staticmethod
+    def _pull_form(engine_name: str) -> dict:
+        """The pull, on the engine named: a job (liminal-platform 0.19.0) whose lines the page follows as they come."""
+        return {"id": "pull", "hook": "pull", "title": "Pull an image", "job": True,
+                "note": "From its registry: Docker Hub unless its name says another (ghcr.io/..., quay.io/...).",
+                "fields": [{"name": "engine", "label": "Engine", "type": "fixed", "value": engine_name},
+                           {"name": "image", "label": "Image", "type": "text", "required": True,
+                            "placeholder": "nginx:1.27, ghcr.io/owner/name:tag", "note": "its tag after a colon; latest when none"}],
+                "submit": "Review",
+                "confirm": {"title": "Pull {image} on {engine}?",
+                            "words": ("{engine} downloads {image} from its registry (Docker Hub unless the name says another); "
+                                      "its progress shows in the panel below as it comes, and a large image takes minutes. "
+                                      "Nothing runs from it until a container is made. An image of the same name is replaced "
+                                      "by the newer one; a container keeps the one it was made from. Docker Hub allows a "
+                                      "limited number of anonymous pulls an hour from this network's address."),
+                            "yes": "Pull"}}
+
+    # -- finding an image (0.2.0) -----------------------------------------------------------------------------------------
+    def _puller(self, r: Reading) -> Seen | None:
+        """The engine an image is pulled on: the one shown, else the first that answers; None when none answers."""
+        shown = r.engine(r.shown)
+        return shown if shown is not None and shown.answering else next((e for e in r.engines if e.answering), None)
+
+    def _found_table(self, found: Outcome | None, puller: Seen | None) -> dict:
+        """The last search's results: what each image is and provides, where from, why it ranks where it does, a
+        Details (what it is and holds) and a Pull (as a job, its progress in the panel) for each one that is one image."""
+        search = {"form": "search", "field": "query", "value": found.query.text if found else "",
+                  "placeholder": "what the image is for: nginx web server, postfix mail server with anti-spam, postgres …"}
+        if found is None:
+            return {"title": "Find an image", "search": search, "columns": [{"title": "Image"}], "rows": [],
+                    "note": ("Searches Docker Hub (through a running Docker engine), Quay and Artifact Hub for anything, with "
+                             "Liminal's picks for web servers, reverse proxies and mail servers; each result described, its "
+                             "Details read on demand, and a Pull that shows its progress."),
+                    "empty": "Type what the image is for above, then Search.",
+                    "actions": [{"form": "details", "title": "Details of an image…"}]}
+        rows = []
+        for x in found.results[:FOUND_ROWS]:
+            f = x.found
+            what = (f.provides or f.description or "no description given").strip()
+            if len(what) > DESCRIPTION_CHARS:
+                what = what[:DESCRIPTION_CHARS - 1].rstrip() + "…"
+            facts = " · ".join(v for v in (", ".join(f.categories[:3]), f.licence) if v)
+            reasons = list(x.reasons)
+            where = " · ".join(v for v in (registry_of(f.ref), shown_ref(f.ref) if shown_ref(f.ref) != f.name else "",
+                                            f.publisher if f.publisher and f.publisher != f.name else "") if v)
+            details = {"form": "detail", "title": "Details", "values": {"image": f.ref}, "label": f"Details of {f.name or shown_ref(f.ref)}"}
+            if f.stack:
+                pull = {"text": "a stack", "sub": "installed its own way"}
+            elif puller is None:
+                pull = {"text": "–", "sub": "no engine answers"}
+            else:
+                ref = pull_ref(f.ref, f.tag)
+                pull = {"form": "pull", "title": "Pull…", "values": {"image": ref}, "label": f"Pull {ref} on {puller.name}",
+                        "note": f"{ref} on {puller.name}"}
+            rows.append([cell(f.name or shown_ref(f.ref), where or None), cell(what, facts or None),
+                         cell(reasons[0] if reasons else "–", "; ".join(reasons[1:]) or None), details, pull])
+        parts = [f"Read as: {found.query.said()}."]
+        for name, a in found.sources():
+            title = SOURCES.get(name, name) + (f" through {found.engine}" if name == "docker-hub" and found.engine else "")
+            parts.append(f"{title}: " + (a["error"] if a.get("error") and not a.get("found") else
+                                        f"{a.get('found', 0)} found" + (f" ({', '.join(a['terms'])})" if a.get("terms") else "")))
+        if found.allowance:
+            al = found.allowance
+            parts.append(f"Docker Hub's anonymous pulls left from here: {al['left']} of {al['limit']} "
+                         f"(per {al['hours']:g} hour{'s' if al['hours'] != 1 else ''})")
+        parts += found.notes
+        return {"title": f"Find an image: {len(found.results[:FOUND_ROWS])} for “{found.query.text}”", "search": search,
+                "note": " · ".join(parts), "rows": rows,
+                "columns": [{"title": "Image"}, {"title": "What it provides"}, {"title": "Why"}, {"title": "Details"},
+                            {"title": "Pull"}],
+                "empty": "Nothing found: other words, or another source (Everywhere asks them all).",
+                "actions": [{"form": "details", "title": "Details of an image…"},
+                            {"hook": "clear_search", "args": [], "title": "Clear", "note": "forgets these results"}]}
+
+    def _search_forms(self, found: Outcome | None, puller: Seen | None) -> list[dict]:
+        """The search (drawn as the box above its table), Details, and the pull of a result when no engine is shown
+        (the engine forms' pull otherwise)."""
+        forms = [
+            {"id": "search", "hook": "search", "title": "Find an image", "confirm": False, "submit": "Search",
+             "note": ("Docker Hub through a running Docker engine, Quay and Artifact Hub, with Liminal's picks for web servers, "
+                      "reverse proxies and mail servers. Each registry asked receives these words."),
+             "fields": [{"name": "query", "label": "What for", "type": "text", "required": True,
+                         "value": found.query.text if found else "",
+                         "placeholder": "nginx web server, postfix mail server with anti-spam, postgres, home assistant …"},
+                        {"name": "where", "label": "Where", "type": "choice", "value": found.where if found else "all",
+                         "choices": where_choices()}]},
+            {"id": "details", "hook": "details", "title": "Details of an image", "confirm": False, "submit": "Show",
+             "note": "What it provides, its description and README's first lines (its publisher's words), its newest tags.",
+             "fields": [{"name": "image", "label": "Image", "type": "text", "required": True,
+                         "placeholder": "nginx, mailserver/docker-mailserver, quay.io/owner/name"}]},
+            # a result's own Details: its image given, nothing to fill or confirm, so the page asks it as it opens
+            {"id": "detail", "hook": "details", "title": "Details", "confirm": False,
+             "fields": [{"name": "image", "label": "Image", "type": "fixed"}]},
+        ]
         return forms
 
     # -- what the page asks --------------------------------------------------------------------------------------
@@ -669,16 +792,85 @@ class DockerPlugin(MachinePlugin):
         return {"said": f"the last {plural(len(got), 'line')} of {n}'s log on {i.name}" + (f" ({when})" if when else ""),
                 "lines": got, "ok": True}
 
-    def pull(self, engine, image) -> dict:
-        """An image pulled from its registry (Docker Hub unless its name says another)."""
+    def pull(self, engine, image, log=None) -> dict:
+        """An image pulled from its registry (Docker Hub unless its name says another). As a job (`log`: the platform's
+        panel, liminal-platform 0.19.0), each line docker prints is given to it as it comes. A compose stack the search
+        lists is no image: refused, in words."""
         ref = self._image(image)
+        stack = next((p for p in PICKS if p.stack and canonical(ref) == p.ref), None)
+        if stack is not None:
+            raise ValueError(f"{stack.name} is a compose stack of several images, not one to pull: {stack.stack}")
         e, i = self._ready(engine)
+        if log is not None:
+            log(f"pulling {ref} on {i.name} ({i.where})")
         try:
-            out = e.pull(ref)
+            out = e.pull_streaming(ref, log) if log is not None else e.pull(ref)
         finally:
             self._forget()
         said = [line.strip() for line in out.splitlines() if line.strip()]
         return {"said": f"{ref} pulled on {i.name}", "lines": said[-3:], "ok": True}
+
+    # -- finding an image (0.2.0) -----------------------------------------------------------------------------------------
+    def _searcher(self) -> Searcher:
+        with self._rt.lock:
+            if self._rt.searcher is None:
+                self._rt.searcher = Searcher(self._http or Http(), wall=self._wall)
+            return self._rt.searcher
+
+    def _website(self) -> bool:
+        """The user's setting: Docker Hub's website search too (read through the login the plugin is lent; off unless on)."""
+        login = getattr(self, "login", None) or EnvironmentLogin()
+        try:
+            value = (login.variables((WEBSITE_VAR,)) or {}).get(WEBSITE_VAR) or ""
+        except Exception:  # noqa: BLE001 - a login that cannot be asked: off
+            return False
+        return str(value).strip().lower() in ("on", "1", "true", "yes")
+
+    def search(self, query, where="all") -> dict:
+        """Images for `query` (anything: its words read, the known ones understood) from Docker Hub through the engine
+        that answers, Quay, Artifact Hub and Liminal's picks (`where`: one of them, or all), ranked, kept for the page's
+        table until the next search; nothing is pulled."""
+        text = " ".join(str(query if query is not None else "").split())
+        if not text:
+            raise ValueError("say what the image is for: nginx web server, postfix mail server with anti-spam, postgres …")
+        r = self._read()
+        puller = self._puller(r)
+        engine = None
+        if puller is not None:
+            try:  # asked now, as every change is: a distribution stopped since the last look is said, never started
+                engine, _ = self._ready(puller.name)
+            except ValueError:
+                puller = None
+        with self._rt.searching:
+            found = self._searcher().search(text, str(where or "all"), engine, puller.name if puller else "", self._website())
+        with self._rt.lock:
+            self._rt.found = found
+        n = len(found.results)
+        lines = [f"read as: {found.query.said()}"]
+        for name, a in found.sources():
+            lines.append(f"{SOURCES.get(name, name)}: " + (a["error"] if a.get("error") and not a.get("found") else f"{a.get('found', 0)} found"))
+        lines += [f"{k + 1}. {x.found.name or shown_ref(x.found.ref)}: {(x.found.provides or x.found.description or '')[:160]}"
+                  for k, x in enumerate(found.results[:5])]
+        return {"said": f"{n} image{'' if n == 1 else 's'} for “{text}”: the table below lists them" if n else f"nothing found for “{text}”",
+                "lines": lines, "ok": True}
+
+    def details(self, image) -> dict:
+        """What one image is and holds, in words: where from and by whom, why it ranks where it does, what it provides,
+        its description and README's first lines (its publisher's words, shown as plain text), its newest tags. Reads
+        only; nothing is pulled."""
+        ref = str(image if image is not None else "").strip()
+        if not ref or len(ref) > 255 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/:@-]*", ref):
+            raise ValueError(f"not an image's name: {ref!r} (as nginx, mailserver/docker-mailserver, quay.io/owner/name)")
+        with self._rt.lock:
+            found = self._rt.found
+        title, lines = self._searcher().details(ref, found)
+        return {"said": title, "lines": lines, "ok": True}
+
+    def clear_search(self) -> dict:
+        with self._rt.lock:
+            had = self._rt.found
+            self._rt.found = None
+        return {"said": "the search's results forgotten" if had else "no results to forget", "ok": True}
 
     def remove_image(self, engine, image, force=False) -> dict:
         """An image removed (docker rmi); one a container was made from only once accepted (`force`: docker rmi --force;

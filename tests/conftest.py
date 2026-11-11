@@ -13,6 +13,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def nothing_runs(monkeypatch):
     def refused(*a, **k):
+        __tracebackhide__ = True  # its arguments (a process's environment, with its keys' values) never printed
         raise AssertionError("a test started a process or reached for the network")
     monkeypatch.setattr(subprocess, "run", refused)
     monkeypatch.setattr(subprocess, "Popen", refused)
