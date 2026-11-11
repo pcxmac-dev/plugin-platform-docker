@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "plugin-platform-docker"
-version = "0.2.0"  # the plugin's own release (CHANGELOG.md); the app shows it on the Plugins view
+version = "0.3.0"  # the plugin's own release (CHANGELOG.md); the app shows it on the Plugins view
 description = "Docker for Liminal: every Docker engine here (this machine's, its contexts, a host, Docker inside Liminal's WSL distributions), each one's containers, images, volumes and networks, and the changes the platform's page confirms."
 readme = "README.md"
 requires-python = ">=3.10"
-# the library it plugs into (the machine kind: liminal_libs.machines, plugin API 2.1; docker.instances and the WSL
-# plugins' engines, a stopped distribution never started to look since 1.28.0)
-dependencies = ["liminal-libs>=1.33.0"]
+# the library it plugs into (the machine kind: liminal_libs.machines, plugin API 2.2: what it attaches to, its API
+# cards, since 1.49.0; docker.instances and the WSL plugins' engines, a stopped distribution never started to look since
+# 1.28.0)
+dependencies = ["liminal-libs>=1.49.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

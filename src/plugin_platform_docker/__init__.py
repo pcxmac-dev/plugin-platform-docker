@@ -32,6 +32,7 @@ from liminal_libs.machines.plugin import MachinePlugin, liminal_scoped
 from liminal_libs.machines.wsl import Wsl
 from liminal_libs.sources.keys import KeyVar
 
+from . import apis as cards
 from .catalog import PICKS
 from .engines import (STOP_S, Engine, anonymous, broken, created, image_ref, liminal_service, local_time, names, ports,
                       short, span, users_of, words, wsl_target)
@@ -39,7 +40,7 @@ from .search import Outcome, Searcher, where_choices
 from .sources import SOURCES, Http, canonical, pull_ref, registry_of
 from .sources import shown as shown_ref
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 WEBSITE_VAR = "DOCKER_HUB_WEBSITE_SEARCH"  # the user's setting: Docker Hub's website search too (undocumented; off)
 KEYS = (KeyVar(WEBSITE_VAR, label="Docker Hub's website search", secret=False,
                hint=("optional: on to also ask Docker Hub's website search (undocumented: its ranking, badges and pull counts "
@@ -193,7 +194,10 @@ class DockerPlugin(MachinePlugin):
              "each one's version and state, its containers, images, volumes and networks; a container started, stopped, "
              "restarted or removed, an image pulled or removed, once confirmed; an image for anything found on Docker Hub "
              "(through a running engine), Quay and Artifact Hub, described, and pulled with its progress shown")
-    api = "2.1"
+    api = "2.2"
+    # what it attaches to (plugin API 2.2): the docker command and the Engine API, Docker Hub's, Quay's and Artifact Hub's
+    # APIs, the OCI registry API (apis.py: each one's pages, parts and calls)
+    apis = cards.APIS
     order = 705
     ICON = "docker"  # Docker's whale with its containers (liminal-libs 1.33.0's icons.js)
     HOOKS = (*MachinePlugin.HOOKS, "choose_engine", "refresh", "container", "remove_container", "logs", "pull", "remove_image",
@@ -341,6 +345,38 @@ class DockerPlugin(MachinePlugin):
     def engines(self) -> list[Seen]:
         """The engines as read (kept READ_S)."""
         return list(self._read().engines)
+
+    def api_facts(self) -> dict:
+        """What it learned of its APIs while it ran (plugin API 2.2), asking nothing: the engines as last read (the shown
+        one's engine and client versions, when), each registry API's requests made and a host that asked to wait, Docker
+        Hub's anonymous pulls left as the last search read them. Nothing read yet: {}."""
+        with self._rt.lock:
+            r, searcher, found = self._rt.reading, self._rt.searcher, self._rt.found
+        out: dict[str, dict[str, str]] = {}
+        if r is not None:
+            cli = {"Read": f"{clock(r.when)} (kept {READ_S:g} s)",
+                   "Engines": f"{sum(1 for e in r.engines if e.answering)} answering of {len(r.engines)}"}
+            shown = r.engine(r.shown)
+            if shown is not None and shown.answering:
+                v = shown.version
+                cli["Engine"] = " ".join(x for x in (shown.name, v.get("engine", ""), f"({v['os']}/{v.get('arch', '')})"
+                                                     if v.get("os") else "") if x)
+                if v.get("client"):
+                    cli["Client"] = str(v["client"])
+            out[cards.CLI] = cli
+        if searcher is not None:
+            http = searcher.http
+            for host, n in sorted(http.counts().items()):
+                facts = out.setdefault(cards.HOSTS.get(host, cards.OCI), {})
+                facts[f"Requests to {host}"] = f"{n:,} made"
+                wait = http.busy(host)
+                if wait:
+                    facts[f"{host} asked to wait"] = f"{int(wait) + 1} s more"
+        if found is not None and found.allowance:
+            al = found.allowance
+            out.setdefault(cards.HUB, {})["Anonymous pulls left"] = (
+                f"{al['left']} of {al['limit']} per {al['hours']:g} h from this network (read {clock(found.at)})")
+        return out
 
     def status(self) -> dict:
         r = self._read()

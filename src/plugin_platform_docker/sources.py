@@ -26,7 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 
-VERSION = "0.2.0"  # the plugin's (a test keeps it equal to __version__)
+VERSION = "0.3.0"  # the plugin's (a test keeps it equal to __version__)
 USER_AGENT = f"plugin-platform-docker/{VERSION}"
 HUB = "https://hub.docker.com"
 QUAY = "https://quay.io"
@@ -263,6 +263,12 @@ class Http:
         self._busy: dict[str, float] = {}
         self._cache: dict[str, tuple[float, object]] = {}
         self.asked = 0  # requests made (not cached): for the tests and the facts
+        self.by_host: dict[str, int] = {}  # the requests made, by host (the plugin's api_facts, plugin API 2.2)
+
+    def counts(self) -> dict[str, int]:
+        """The requests made so far, by host (none cached among them)."""
+        with self._lock:
+            return dict(self.by_host)
 
     def forget(self) -> None:
         with self._lock:
@@ -292,7 +298,9 @@ class Http:
         self._turn(host)
         sent = {"User-Agent": USER_AGENT, "Accept": "application/json", **(headers or {})}
         status, got, body = self._open(method, url, sent, TIMEOUT_S)
-        self.asked += 1
+        with self._lock:
+            self.asked += 1
+            self.by_host[host] = self.by_host.get(host, 0) + 1
         if status == 429 or (host == "artifacthub.io" and status == 403):
             wait = number(got.get("retry-after")) or BUSY_S
             with self._lock:

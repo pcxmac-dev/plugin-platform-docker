@@ -8,7 +8,7 @@ platform: "basically the platform is the interface for the software/hardware whi
 
 ## What it does
 
-A machine plugin of the platform (`liminal_libs.machines.MachinePlugin`, plugin API 2.1, its icon the database: the
+A machine plugin of the platform (`liminal_libs.machines.MachinePlugin`, plugin API 2.2, its icon the database: the
 library's icons.js has no box yet) over the library's `docker.py`:
 
 - **The engines**: every one `liminal_libs.docker.instances` knows: this machine's docker command (Docker Desktop,
@@ -47,6 +47,32 @@ Read again asks now), holds no process and no thread between asks, and forgets w
 Every command runs windowless (`CREATE_NO_WINDOW` on Windows), without this process's standard input, its output read
 as UTF-8 (a container's log may hold any bytes), through the library's `Docker` (the plugin's `Engine` adds the
 listings, a restart, an image's removal and a log with its error stream).
+
+## Its API
+
+What it attaches to, as its page shows it (plugin API 2.2: `apis.py`, read from the makers' pages on 2026-11-11), each
+API's parts and calls, those the plugin uses first and the rest after them:
+
+- **Docker CLI and Engine API** (Docker, Inc.): the `docker` command and the engine's REST API under it. The
+  [CLI reference](https://docs.docker.com/reference/cli/docker/), the
+  [Engine API reference](https://docs.docker.com/reference/api/engine/version/v1.56/) (and its
+  [OpenAPI file](https://docs.docker.com/reference/api/engine/version/v1.56.yaml)),
+  [Docker contexts](https://docs.docker.com/engine/manage-resources/contexts/), the
+  [release notes](https://docs.docker.com/engine/release-notes/).
+- **Docker Hub API**: the [reference](https://docs.docker.com/reference/api/hub/latest/), its
+  [usage and limits](https://docs.docker.com/docker-hub/usage/) and [pull limits](https://docs.docker.com/docker-hub/usage/pulls/),
+  [Docker's status](https://www.dockerstatus.com/).
+- **Quay.io API**: [its API](https://docs.quay.io/api/) and [explorer](https://docs.quay.io/api/swagger/), the
+  [Project Quay API guide](https://docs.projectquay.io/api_quay.html).
+- **Artifact Hub API**: [its API](https://artifacthub.io/docs/api/) and [its documentation](https://artifacthub.io/docs/).
+- **OCI Distribution** (any registry's API): the
+  [specification](https://github.com/opencontainers/distribution-spec/blob/main/spec.md) and the
+  [token authentication](https://distribution.github.io/distribution/spec/auth/token/) a public image's anonymous token
+  follows.
+
+`api_facts()` says what it learned while it ran, asking nothing: the engines as last read and their versions, each
+registry's requests and a host that asked to wait, Docker Hub's anonymous pulls left as the last search read them.
+`LIMINAL_VENDOR_PAGES=1 pytest tests/test_apis.py` checks that every address on the cards still answers.
 
 ## Its hooks
 

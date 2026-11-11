@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0 (2026-11-11)
+
+Its API on its page (plugin API 2.2, liminal-libs 1.49.0; the user: "each plugin should reflect the the API its attached
+to, and present links that provide documentation, the plugin interface should more or less contain what it already has,
+BUT, it should also expose more of what the API is about"). Needs liminal-libs>=1.49.0.
+
+- `apis` (apis.py): five cards, each read from its maker's pages on 2026-11-11: the **Docker CLI and Engine API** (the
+  docker command and the engine's REST API under it: 17 links, from the CLI and Engine API references to the release
+  notes, the OpenAPI file and Docker Desktop's license; 23 parts, 7 of them used; 24 commands, the 14 it runs each named
+  with the Engine API call it is), the **Docker Hub API** (11 parts: repositories used, the website's undocumented search
+  when its setting is on; its per-minute limit headers and the pull limits in numbers), **Quay.io's API** (23 parts from
+  its discovery document: search and tags used), **Artifact Hub's API** (9 parts: packages used) and the **OCI
+  Distribution** API every registry speaks (tags listed, the anonymous token, the HEAD that reads Docker Hub's pulls
+  left). Each call says what the plugin makes it for, a change is marked as one, and none costs.
+- `api_facts()`: what it already holds, asking nothing: the engines as last read (the shown one's engine and client
+  versions, when), each registry's requests made and a host that asked to wait (the registries' client now counts its
+  requests by host), Docker Hub's anonymous pulls left as the last search read them.
+- Tests: the cards are sound; they name every docker command and every registry address the plugin sends (read from
+  the stand-ins as it sends them) and claim none it does not; the facts ask nothing; with LIMINAL_VENDOR_PAGES=1, every
+  address on the cards answers (all did on 2026-11-11).
+
 ## 0.2.0 (2026-11-11)
 
 Find an image for anything, see what it provides, and pull it with its progress shown (the user, 2026-11-10: "lets roll
