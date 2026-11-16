@@ -26,7 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 
-VERSION = "0.3.0"  # the plugin's (a test keeps it equal to __version__)
+VERSION = "0.3.1"  # the plugin's (a test keeps it equal to __version__)
 USER_AGENT = f"plugin-platform-docker/{VERSION}"
 HUB = "https://hub.docker.com"
 QUAY = "https://quay.io"

@@ -40,7 +40,7 @@ from .search import Outcome, Searcher, where_choices
 from .sources import SOURCES, Http, canonical, pull_ref, registry_of
 from .sources import shown as shown_ref
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 WEBSITE_VAR = "DOCKER_HUB_WEBSITE_SEARCH"  # the user's setting: Docker Hub's website search too (undocumented; off)
 KEYS = (KeyVar(WEBSITE_VAR, label="Docker Hub's website search", secret=False,
                hint=("optional: on to also ask Docker Hub's website search (undocumented: its ranking, badges and pull counts "
@@ -200,6 +200,7 @@ class DockerPlugin(MachinePlugin):
     apis = cards.APIS
     order = 705
     ICON = "docker"  # Docker's whale with its containers (liminal-libs 1.33.0's icons.js)
+    SECTION = "virtualization"  # drawn under the platform's Virtualization plugins (liminal-platform 0.26.0)
     HOOKS = (*MachinePlugin.HOOKS, "choose_engine", "refresh", "container", "remove_container", "logs", "pull", "remove_image",
              "search", "details", "clear_search")
     JOB_HOOKS = ("pull",)  # hooks the platform may run as a job, their lines followed on the page (liminal-platform 0.19.0)
