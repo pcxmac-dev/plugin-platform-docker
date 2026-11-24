@@ -20,6 +20,7 @@ PULL_S = 1800.0  # a pull at most (a large image over a slow line), its lines sh
 STOP_S = 20  # seconds a container is given to end on its own before it is killed
 LINE_CHARS = 2000  # a log line longer than this is cut
 UTF8_WSL = {"WSL_UTF8": "1"}  # wsl's own words in UTF-8 (UTF-16 otherwise)
+WATCH_S = 0.25  # how often a streamed command's `stop` is looked at (a pull's Cancel, the plugin turned off)
 LISTINGS = {  # what each listing asks (docker ... --format "{{json .}}": one JSON object a line)
     "containers": ("ps", "-a", "--no-trunc"),
     "images": ("images", "--no-trunc"),
@@ -55,10 +56,17 @@ def run(args, timeout: float) -> tuple[int, str, str]:
     return done.returncode, text(done.stdout), text(done.stderr)
 
 
-def stream(args, timeout: float, line) -> tuple[int, str]:
+class Cancelled(DockerError):
+    """A streamed command killed because it was asked to stop (its job's Cancel, the plugin turned off, the platform
+    stopping): what it had done is docker's to keep (a pull keeps the layers that came)."""
+
+
+def stream(args, timeout: float, line, stop=None) -> tuple[int, str]:
     """`args` run as `run` runs them (windowless, no standard input), each line it prints given to `line` as it comes (a
     pull's progress, followed on the platform's page): (exit code, what it wrote to its errors). Running past `timeout`,
-    it is killed: a DockerError."""
+    it is killed: a DockerError. `stop` (() -> bool), looked at every WATCH_S while it runs: once true, it is killed,
+    Cancelled (the review of 2026-11-21, item 26, finding 17: a pull ran on for up to PULL_S after its plugin was turned
+    off, and its job had no Cancel)."""
     args = [str(a) for a in args]
     try:
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
@@ -77,6 +85,21 @@ def stream(args, timeout: float, line) -> tuple[int, str]:
     timer = threading.Timer(timeout, kill)
     timer.daemon = True
     timer.start()
+    asked = threading.Event()
+    ended = threading.Event()
+
+    def watch() -> None:
+        while not ended.wait(WATCH_S):
+            try:
+                if stop():
+                    asked.set()
+                    proc.kill()
+                    return
+            except Exception:  # noqa: BLE001 - a stop that cannot say is not asked
+                pass
+    watcher = threading.Thread(target=watch, name="docker-stream-stop", daemon=True) if stop is not None else None
+    if watcher is not None:
+        watcher.start()
     try:
         for raw in iter(proc.stdout.readline, b""):
             got = text(raw).rstrip("\r\n")
@@ -85,7 +108,10 @@ def stream(args, timeout: float, line) -> tuple[int, str]:
         proc.wait()
     finally:
         timer.cancel()
+        ended.set()
         reader.join(5)
+    if asked.is_set():
+        raise Cancelled(f"{said(args)} was asked to stop: stopped")
     if killed.is_set():
         raise DockerError(f"{said(args)} took more than {timeout:g} s: stopped")
     return proc.returncode, text(b"".join(errors))
@@ -113,7 +139,7 @@ class Engine(Docker):
     def __init__(self, *args, runner=None, streamer=None, **kw):
         self.last: tuple[int, str, str] = (0, "", "")  # the last command's exit code, output and errors
         given = runner if runner is not None else run
-        self._stream = streamer if streamer is not None else stream  # (args, timeout, line) -> (code, errors)
+        self._stream = streamer if streamer is not None else stream  # (args, timeout, line, stop) -> (code, errors)
 
         def recorded(argv, timeout):
             self.last = given(argv, timeout)
@@ -125,16 +151,16 @@ class Engine(Docker):
         return [self.command, *self.argv[1:], *(("--context", self.context) if self.context else ()),
                 *(("-H", self.host) if self.host else ()), *args]
 
-    def pull_streaming(self, ref: str, log, timeout: float = PULL_S) -> str:
+    def pull_streaming(self, ref: str, log, timeout: float = PULL_S, stop=None) -> str:
         """`docker pull ref`, each line it prints given to `log` as it comes (a job's panel); what it printed. Refused,
-        or failed: a DockerError in docker's own words."""
+        or failed: a DockerError in docker's own words; asked to stop (`stop`, as `stream` takes it): Cancelled."""
         self.log(f"docker: pulling {ref} on {self.where}")
         printed: list[str] = []
 
         def each(s: str) -> None:
             printed.append(s)
             log(s)
-        code, errors = self._stream(self.line("pull", ref), timeout, each)
+        code, errors = self._stream(self.line("pull", ref), timeout, each, stop)
         if code != 0:
             raise DockerError((errors or "\n".join(printed[-3:]) or f"docker pull {ref} failed ({code})").strip())
         return "\n".join(printed)

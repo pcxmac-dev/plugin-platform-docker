@@ -34,13 +34,13 @@ from liminal_libs.sources.keys import KeyVar
 
 from . import apis as cards
 from .catalog import PICKS
-from .engines import (STOP_S, Engine, anonymous, broken, created, image_ref, liminal_service, local_time, names, ports,
+from .engines import (STOP_S, Cancelled, Engine, anonymous, broken, created, image_ref, liminal_service, local_time, names, ports,
                       short, span, users_of, words, wsl_target)
 from .search import Outcome, Searcher, where_choices
 from .sources import SOURCES, Http, canonical, pull_ref, registry_of
 from .sources import shown as shown_ref
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 WEBSITE_VAR = "DOCKER_HUB_WEBSITE_SEARCH"  # the user's setting: Docker Hub's website search too (undocumented; off)
 KEYS = (KeyVar(WEBSITE_VAR, label="Docker Hub's website search", secret=False,
                hint=("optional: on to also ask Docker Hub's website search (undocumented: its ranking, badges and pull counts "
@@ -140,6 +140,7 @@ class _Runtime:
         self.searching = threading.Lock()  # one image search at a time (0.2.0)
         self.searcher: Searcher | None = None  # its requests' turns and cache, made at the first search
         self.found: Outcome | None = None  # the last search's results, until the next, Clear, or the plugin detached
+        self.pulls: set[threading.Event] = set()  # each pull under way's stop, set when the plugin is turned off (0.3.2)
 
 
 def cell(text, sub=None):
@@ -204,6 +205,9 @@ class DockerPlugin(MachinePlugin):
     HOOKS = (*MachinePlugin.HOOKS, "choose_engine", "refresh", "container", "remove_container", "logs", "pull", "remove_image",
              "search", "details", "clear_search")
     JOB_HOOKS = ("pull",)  # hooks the platform may run as a job, their lines followed on the page (liminal-platform 0.19.0)
+    # a pull's job may be asked to stop (liminal-platform 0.31.0's Cancel, and its stop): its `log.cancelled` is looked at
+    # while docker pull runs, which is then killed (the review of 2026-11-21, item 26, finding 17)
+    CANCEL_HOOKS = ("pull",)
     keys = KEYS  # its settings, kept through the platform's login (the website search's switch)
 
     def __init__(self, machines=None, find=None, runner=None, wsl=None, env=None, clock=None, wall=None, http=None, streamer=None):
@@ -215,7 +219,7 @@ class DockerPlugin(MachinePlugin):
         self._clock = clock or time.monotonic
         self._wall = wall or time.time
         self._http = http  # the registries' requests (sources.Http; a test's stand-in opener inside): made at the first search
-        self._streamer = streamer  # (args, timeout, line) -> (code, errors): engines.stream (a pull's lines) unless given
+        self._streamer = streamer  # (args, timeout, line, stop) -> (code, errors): engines.stream (a pull's lines) unless given
         self._rt = _Runtime()
 
     # -- the engines ---------------------------------------------------------------------------------------
@@ -320,9 +324,23 @@ class DockerPlugin(MachinePlugin):
         with self._rt.lock:
             self._rt.reading = None
 
+    def _stop_pulls(self) -> None:
+        """Each pull under way asked to stop: its docker pull is killed (docker keeps the layers that came)."""
+        with self._rt.lock:
+            pulls = list(self._rt.pulls)
+        for stop in pulls:
+            stop.set()
+
+    def app_stopping(self) -> None:
+        """The platform stops: a pull under way ends (the platform has asked its job already; one asked without a job
+        has no Cancel but this)."""
+        self._stop_pulls()
+
     def detach(self) -> None:
-        """Detached (the platform ending, the plugin turned off): what it read goes, the last search's results and what
-        the registries answered too; nothing of its own was running."""
+        """Detached (the platform ending, the plugin turned off): a pull under way ends (the review of 2026-11-21, item
+        26, finding 17: its docker pull ran on for up to PULL_S), what it read goes, the last search's results and what
+        the registries answered too."""
+        self._stop_pulls()
         self._forget()
         with self._rt.lock:
             self._rt.found = None
@@ -832,7 +850,8 @@ class DockerPlugin(MachinePlugin):
     def pull(self, engine, image, log=None) -> dict:
         """An image pulled from its registry (Docker Hub unless its name says another). As a job (`log`: the platform's
         panel, liminal-platform 0.19.0), each line docker prints is given to it as it comes. A compose stack the search
-        lists is no image: refused, in words."""
+        lists is no image: refused, in words. It can be asked to stop (0.3.2): its job's Cancel (`log.cancelled`), the
+        plugin turned off (detach) or the platform stopping, and then docker pull is killed and it says so."""
         ref = self._image(image)
         stack = next((p for p in PICKS if p.stack and canonical(ref) == p.ref), None)
         if stack is not None:
@@ -840,9 +859,21 @@ class DockerPlugin(MachinePlugin):
         e, i = self._ready(engine)
         if log is not None:
             log(f"pulling {ref} on {i.name} ({i.where})")
+        stop = threading.Event()
+        with self._rt.lock:
+            self._rt.pulls.add(stop)
         try:
-            out = e.pull_streaming(ref, log) if log is not None else e.pull(ref)
+            # streamed even with no job's panel (a plain ask), so that turning the plugin off ends it all the same
+            out = e.pull_streaming(ref, log if log is not None else (lambda _s: None),
+                                   stop=lambda: stop.is_set() or bool(getattr(log, "cancelled", False)))
+        except Cancelled:
+            words = f"{ref} was not pulled on {i.name}: cancelled (docker keeps the layers that came)"
+            if log is not None:
+                log(words)
+            return {"said": words, "lines": [], "ok": False}
         finally:
+            with self._rt.lock:
+                self._rt.pulls.discard(stop)
             self._forget()
         said = [line.strip() for line in out.splitlines() if line.strip()]
         return {"said": f"{ref} pulled on {i.name}", "lines": said[-3:], "ok": True}

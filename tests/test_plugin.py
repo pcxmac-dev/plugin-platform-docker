@@ -102,7 +102,7 @@ class Docker:
             key, args = (args[1] if args[0] == "--context" else "host"), args[2:]
         return self.engines[key].answer(args)
 
-    def stream(self, argv, timeout, line):
+    def stream(self, argv, timeout, line, stop=None):
         """The streaming runner's stand-in (a pull as a job, 0.2.0): the same answer, its output given line by line."""
         code, out, err = self(argv, timeout)
         for s in out.splitlines():
@@ -497,3 +497,109 @@ def test_the_command_line(monkeypatch, capsys):
     capsys.readouterr()
     assert cli.main(["stop", "wsl-ubuntu", "web"]) == 1 and "refused: wsl-ubuntu is not asked now" in capsys.readouterr().err
     assert run.calls == [] and booted(wsl.calls) == []
+
+
+class Blocking:
+    """A streamer that blocks as a long docker pull would, until it is asked to stop (its `stop`) or killed (`kill`):
+    whether it was, and how. Nothing runs."""
+
+    def __init__(self):
+        self.started = threading.Event()
+        self.killed = threading.Event()
+        self.stopped = threading.Event()
+
+    def kill(self) -> None:
+        self.killed.set()
+
+    def __call__(self, argv, timeout, line, stop=None):
+        line("Pulling from library/postgres")
+        self.started.set()
+        while not self.killed.wait(0.05):
+            if stop is not None and stop():
+                self.stopped.set()
+                raise eng.Cancelled("docker pull was asked to stop: stopped")
+        return 137, "killed"
+
+
+def pulling(log=None):
+    p, run, wsl = plugin("Running")
+    blocking = Blocking()
+    p._streamer = blocking
+    got = {}
+    t = threading.Thread(target=lambda: got.update(answer=p.pull("wsl-ubuntu", "postgres:17", log=log)), daemon=True)
+    t.start()
+    assert blocking.started.wait(5)
+    return p, blocking, t, got
+
+
+def test_a_pull_under_way_ends_when_the_plugin_is_turned_off():
+    # the review of 2026-11-21, item 26 (finding 17): detach left docker pull running for up to PULL_S
+    p, blocking, t, got = pulling()
+    try:
+        p.detach()
+        t.join(5)
+        assert not t.is_alive() and blocking.stopped.is_set()
+        assert got["answer"]["ok"] is False and "cancelled" in got["answer"]["said"] and p._rt.pulls == set()
+    finally:
+        blocking.kill()
+
+
+def test_a_pull_is_cancellable_from_its_job_and_by_the_platforms_stop():
+    assert "pull" in DockerPlugin.CANCEL_HOOKS and "pull" in DockerPlugin.JOB_HOOKS
+
+    class Panel(list):
+        cancelled = False
+
+        def __call__(self, s):
+            self.append(s)
+    panel = Panel()
+    p, blocking, t, got = pulling(panel)
+    try:
+        panel.cancelled = True  # the page's Cancel (liminal-platform's Output.cancel)
+        t.join(5)
+        assert not t.is_alive() and blocking.stopped.is_set() and got["answer"]["ok"] is False
+        assert panel[-1] == "postgres:17 was not pulled on wsl-ubuntu: cancelled (docker keeps the layers that came)"
+    finally:
+        blocking.kill()
+    p, blocking, t, got = pulling()
+    try:
+        p.app_stopping()
+        t.join(5)
+        assert not t.is_alive() and blocking.stopped.is_set()
+    finally:
+        blocking.kill()
+
+
+def test_the_streamed_command_is_killed_once_it_is_asked_to_stop(monkeypatch):
+    class Pipe:
+        def __init__(self, proc):
+            self.proc = proc
+
+        def readline(self):
+            self.proc.dead.wait(5)
+            return b""
+
+        def read(self):
+            self.proc.dead.wait(5)
+            return b""
+
+    class Proc:
+        returncode = -9
+
+        def __init__(self, args, **kw):
+            self.dead = threading.Event()
+            self.stdout, self.stderr = Pipe(self), Pipe(self)
+
+        def kill(self):
+            self.dead.set()
+
+        def wait(self):
+            self.dead.wait(5)
+            return self.returncode
+    made = []
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **kw: made.append(Proc(args, **kw)) or made[-1])
+    asked = threading.Event()
+    threading.Timer(0.3, asked.set).start()
+    with pytest.raises(eng.Cancelled, match="asked to stop"):
+        eng.stream(["docker", "pull", "postgres:17"], 60, lambda s: None, asked.is_set)
+    assert made[0].dead.is_set()

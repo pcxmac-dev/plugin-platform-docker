@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 (2026-11-24)
+
+An image's pull can be cancelled, and ends when the plugin is turned off or the platform stops (the review of 2026-11-21, item 26, finding 17: its job had no Cancel, and `detach` left `docker pull` running for up to `PULL_S`, 1,800 s). `CANCEL_HOOKS = ("pull",)`, so the platform's page offers Cancel on a pull's job and its stop asks it to end; `engines.stream` takes a `stop` it looks at every 0.25 s while the command runs and, once asked, kills it (`Cancelled`); `pull` registers each pull's stop, set by `detach` and `app_stopping`, and says "cancelled" (not ok) with docker keeping the layers that came. A pull asked without a job is streamed too, so turning the plugin off ends it as well.
+
 ## 0.3.1 (2026-11-15)
 
 Drawn under the platform's Virtualization plugins section, in the list on the left (the user: "platform needs a virtualization plugins section"; "just like cloud plugins"; "docker, libvirt, kubernetes, lxc should be in virtualization"): `SECTION = "virtualization"`, liminal-libs 1.51.0's machine-plugin attribute. liminal-platform 0.26.0 draws it; an older platform keeps the plugin under Machine plugins. Nothing else changes.
