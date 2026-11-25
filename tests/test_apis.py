@@ -130,7 +130,7 @@ def test_the_changes_are_marked_as_writes_and_none_costs():
     writes = {verb(c.name.split()[1:]) for c in cli.used if c.writes}
     assert writes == {"start", "stop", "restart", "rm", "pull", "rmi",  # and since 0.4.0 a service's, in its plans alone
                       "create", "cp", "rename", "run", "exec", "volume create", "volume rm", "network create",
-                      "network rm"}
+                      "network rm", "build"}  # 0.5.0: an image built here, in its plan's work alone
     assert not any(c.costs for a in dk.MACHINE.apis for c in a.calls)
     assert not any(c.writes for a in dk.MACHINE.apis if a.name != cards.CLI for c in a.used)  # the registries: read only
 

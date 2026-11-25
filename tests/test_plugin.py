@@ -410,7 +410,8 @@ def test_what_was_read_is_kept_nothing_runs_on_its_own_and_detached_it_is_forgot
                                        "hosting", "hosted", "hosted_logs", "exposures", "plan_words", "service_work",
                                        "service_plan", "approve_plan", "decline_plan", "apply_plan", "service_cancel",
                                        "hosted_file", "release_owned", "grant_service", "revoke_service", "forget_volume",
-                                       "segments"}
+                                       "segments",
+                                       "hosted_run"}  # 0.5.0: liminal-libs 1.97.0's RUN_HOOKS, opted into
     p.status()
     n = len(run.calls)
     t[0] += 29

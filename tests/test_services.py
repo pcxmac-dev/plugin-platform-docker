@@ -207,6 +207,10 @@ def service_flow(tmp_path) -> FakeDocker:
     w.carry("rollback", options={"choice": "backup"})
     w.carry("remove")
     w.carry("delete_data", options={"backups": "delete"})
+    # 0.5.0: an image built here, and a recipe's command run in it
+    w.docker.out.fetch = standins.FakeFetch({URL: WHEEL})
+    approved(w, w.jenkins.call("service_plan", "install", "jenkins/ci", built_spec(), "wsl-ubuntu", {}))
+    w.jenkins.call("hosted_run", "jenkins/ci", "controller", "mkrepo", "second")
     w.jenkins.call("segments")
     return w.fake
 
@@ -256,3 +260,67 @@ def test_a_plan_says_where_the_engine_keeps_its_data_in_its_own_word(world):
     info = world.fake.argv_of("info")
     assert info and all(a[:5] == ["wsl", "-d", "Liminal-Ubuntu", "--exec", "docker"] for a in info)
     assert set(world.fake.changes()) <= {"images"}  # a plan changes nothing (its listing of images is a read)
+
+
+# -- 0.5.0 (liminal-libs 1.97.0): an image built here, and a recipe's command in a running part -------------------------
+WHEEL = b"a pinned file's bytes " * 32
+URL = "https://files.pythonhosted.org/packages/aa/merc-7.2.4-py3-none-any.whl"
+FILE = "merc-7.2.4-py3-none-any.whl"
+BASE = {"ref": "docker.io/library/python:3.13.18-slim-trixie", "digest": "sha256:" + "e" * 64, "system": "linux",
+        "platforms": ["linux/amd64"]}
+
+
+def built_spec():
+    import hashlib
+
+    s = spec()
+    part = s["parts"][0]
+    del part["image"]
+    part["build"] = {"base": BASE, "tag": "liminal/jenkins-controller:1.0", "version": "1.0",
+                     "files": [{"name": FILE, "url": URL, "sha256": hashlib.sha256(WHEEL).hexdigest(),
+                                "size": len(WHEEL)}],
+                     "dockerfile": f"FROM {BASE['ref']}@{BASE['digest']}\nCOPY {FILE} /tmp/{FILE}\n"
+                                   f"RUN python -m pip install --no-index /tmp/{FILE}\n"}
+    part["commands"] = [{"name": "mkrepo", "title": "Make a repository", "argv": ["hg", "init", "/srv/hg/{repo}"],
+                         "args": [{"name": "repo", "label": "Repository"}]}]
+    return s
+
+
+def approved(world, plan):
+    for a in plan["approve"]:
+        words = world.page(a["plugin"], "plan_words", a["plan"])
+        needed = {x["name"] for x in words["accepts"]}
+        world.page(a["plugin"], "approve_plan", a["plan"], *[k in needed for k in words["approve_args"]])
+    return world.wait(world.jenkins.call("apply_plan", plan["plan"])["work"])
+
+
+def test_an_image_is_built_here_through_its_engine_from_its_pinned_files_alone(world):
+    world.docker.out.fetch = standins.FakeFetch({URL: WHEEL})
+    world.grant()
+    plan = world.jenkins.call("service_plan", "install", "jenkins/ci", built_spec(), "wsl-ubuntu", {})
+    assert "accept_build" in [a["name"] for a in plan["accepts"]] and world.docker.out.fetch.asked == []
+    end = approved(world, plan)
+    assert end["ok"], end
+    [argv] = world.fake.argv_of("build")
+    assert argv[:5] == ["wsl", "-d", "Liminal-Ubuntu", "--exec", "docker"] and argv[-3:] == ["-f", "Dockerfile", "-"]
+    assert "--pull=false" in argv and "--network=default" in argv
+    [b] = world.fake.builds
+    assert set(b["files"]) == {"Dockerfile", FILE} and b["files"][FILE] == WHEEL
+    c = world.fake.containers["liminal-jenkins-ci-controller"]
+    assert c["image"] == b["id"] and c["labels"]["liminal.built"] == b["id"]
+
+
+def test_a_recipes_command_runs_through_docker_exec_for_its_owner_alone(world):
+    world.docker.out.fetch = standins.FakeFetch({URL: WHEEL})
+    world.grant()
+    assert approved(world, world.jenkins.call("service_plan", "install", "jenkins/ci", built_spec(), "wsl-ubuntu",
+                                              {}))["ok"]
+    with pytest.raises(AskRefused):
+        world.page("docker", "hosted_run", "jenkins/ci", "controller", "mkrepo", "second")
+    said = world.jenkins.call("hosted_run", "jenkins/ci", "controller", "mkrepo", "second")
+    assert said["ok"] and world.fake.execs == [{"container": "liminal-jenkins-ci-controller",
+                                                "argv": ["hg", "init", "/srv/hg/second"]}]
+    [argv] = [a for a in world.fake.argv_of("exec") if "cat" not in a]
+    assert argv[:5] == ["wsl", "-d", "Liminal-Ubuntu", "--exec", "docker"]
+    with pytest.raises(Exception, match="Repository is a name"):
+        world.jenkins.call("hosted_run", "jenkins/ci", "controller", "mkrepo", "-rf")

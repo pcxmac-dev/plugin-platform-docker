@@ -129,6 +129,15 @@ DOCKER_CLI = Api(
         Call("docker exec NAME cat PATH", "a command run in a running container (POST /containers/{id}/exec)", "Exec",
              docs=_cli("container/exec"), writes=True,
              used="a service's readable file (its spec names it; Jenkins' unlock password), for its own plugin alone"),
+        Call("docker exec NAME WORDS", "a command run in a running container (POST /containers/{id}/exec)", "Exec",
+             docs=_cli("container/exec"), writes=True,
+             used=("a command its service's recipe declares (its arguments parsed, never free text), asked by that "
+                   "service's plugin alone, on your confirmation each time (0.5.0, liminal-libs 1.97.0 hosted_run)")),
+        Call("docker build --pull=false --network=default --tag liminal/OWNER-PART:VERSION --label ... -f Dockerfile -",
+             "an image built from a context on standard input (POST /build)", "Build", docs=_cli("buildx/build"),
+             writes=True,
+             used=("an image built here for a service (0.5.0, liminal-libs 1.97.0): its context the pinned files alone, "
+                   "each fetched and checked by sha256, and the Dockerfile; inside the approved plan's work alone")),
         Call("docker inspect --type container NAME", "an object's whole description (GET /containers/{id}/json)",
              "Inspect", docs=_cli("inspect"), used="Liminal's services read back from their labels: state, exit, image"),
         Call("docker create --name NAME --label ... --restart no --memory BYTES IMAGE@DIGEST", "a container made, not "

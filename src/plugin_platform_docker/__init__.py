@@ -51,7 +51,7 @@ from .search import Outcome, Searcher, where_choices
 from .sources import SOURCES, Http, canonical, pull_ref, registry_of
 from .sources import shown as shown_ref
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 WEBSITE_VAR = "DOCKER_HUB_WEBSITE_SEARCH"  # the user's setting: Docker Hub's website search too (undocumented; off)
 KEYS = (KeyVar(WEBSITE_VAR, label="Docker Hub's website search", secret=False,
                hint=("optional: on to also ask Docker Hub's website search (undocumented: its ranking, badges and pull counts "
@@ -246,8 +246,10 @@ class DockerPlugin(ContainerHost):
     ICON = "docker"  # Docker's whale with its containers (liminal-libs 1.33.0's icons.js)
     SECTION = "virtualization"  # drawn under the platform's Virtualization plugins (liminal-platform 0.26.0)
     RUNTIME = "docker"
-    HOOKS = (*ContainerHost.HOOKS, "choose_engine", "refresh", "container", "remove_container", "logs", "pull", "remove_image",
-             "search", "details", "clear_search")
+    HOOKS = (*ContainerHost.HOOKS, *ContainerHost.RUN_HOOKS, "choose_engine", "refresh", "container", "remove_container",
+             "logs", "pull", "remove_image", "search", "details", "clear_search")
+    # 0.5.0 (liminal-libs 1.97.0): a service's recipe's command in its running part (docker exec), its owner's alone
+    PLUGIN_ONLY_HOOKS = ContainerHost.RUN_HOOKS
     READ_HOOKS = ("refresh", "logs", "details")  # its own reads, at last declared (0.4.0), beside the base's
     # its own changes, from its page alone (0.4.0; the networking design's §8.1, N1 a): no other plugin asks them
     PAGE_ONLY_HOOKS = ("choose_engine", "container", "remove_container", "pull", "remove_image")
@@ -1059,7 +1061,8 @@ class DockerPlugin(ContainerHost):
         kind = _Desktop if (target.stack == "windows" and not target.wsl) else DockerRuntime
         return kind(e.line(), self._service_command, self._streamer or stream, version=target.version, arch=target.arch,
                     wsl=bool(target.wsl), trusted=("eth0",) if target.stack in ("wsl", "linux") else (),
-                    lan=(target.path, target.lan_words), where_data=target.where_data, read_root=True)
+                    lan=(target.path, target.lan_words), where_data=target.where_data, read_root=True,
+                    builds=True)  # 0.5.0: an image built here (liminal-libs 1.97.0, SERVICE-INTERFACE.md §10)
 
     def service_reads_wanted(self) -> bool:
         """Whether its page reads its engines' services now: once a service plugin asked, a grant was made, a plan or a

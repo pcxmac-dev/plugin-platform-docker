@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 (2026-11-25)
+
+On liminal-libs 1.97.0. Needs liminal-libs>=1.97.0.
+- **An image built here** (SERVICE-INTERFACE.md §10): its DockerRuntime opts into the library's build
+  (`builds=True`): a recipe whose part says `build` (Mercurial's hg serve) is offered on its engines, and its plan's
+  work runs `docker build --pull=false --network=default --tag liminal/<owner>-<part>:<version> --label liminal=build
+  --label liminal.build-sha=<context digest> -f Dockerfile -`, its context a tar on standard input holding the pinned
+  files (each fetched and checked by its sha256 first) and the Dockerfile alone. The same pins are never built twice.
+- **A recipe's command in a running part** (`hosted_run`, opted into: `ContainerHost.RUN_HOOKS`, plugin-only):
+  `docker exec <container> <words>`, for a command the service's labelled recipe declares, asked by that service's
+  plugin alone on your confirmation.
+- Its API card names both calls (docker build, docker exec NAME WORDS).
+
 ## 0.4.1 (2026-11-25)
 
 On liminal-libs 1.95.0's new hooks, where Docker gains from them. Needs liminal-libs>=1.95.0.
