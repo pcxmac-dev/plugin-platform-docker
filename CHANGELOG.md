@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.4.0 (2026-11-25)
+
+Docker hosts Liminal's services: the first implementation of liminal-libs 1.93.0's one "run a service" interface
+(`ContainerHost`, through the library's `DockerRuntime`), on Docker inside Liminal-Ubuntu first (decision 4: the WSL
+plugin's docker, engine and user steps make it). Monday list items 34 and 35's foundation; service-containers-design
+§2.3, §3 and §4.1, and the networking design's §5.1 and §8.4. Needs liminal-libs>=1.93.0.
+- **Its targets**: each engine of this machine (Docker inside Liminal's WSL distributions, this machine's docker, a
+  context or host whose endpoint is this machine's), ready while it answers. A stopped distribution's engine is
+  "stopped" and is asked nothing (a look never starts it, and no plan starts it either: refused before any command); an
+  engine on another machine is "not here" (a service's data stays on this machine); a Windows engine is left to the
+  Windows containers plugin; Docker Desktop's Linux engine cannot take a service's routed network yet (its own limit).
+- **Its plans, in its own words**, approved on the page (its Waiting for your answer table, or liminal-platform 0.37.0's
+  dialog), carried out as its own work: the image pulled by digest and checked, the named volumes made or found, the
+  service's own network with the subnet the Windows firewall hands out (`trusted_host_interfaces=eth0`), each container
+  made by digest with `--restart no`, a memory limit, its labels and its fixed address, a secret by environment alone
+  (`-e NAME`, its value crossing into WSL through WSLENV), seeds into a new volume, the firewall's route, the
+  distribution held up through its WSL plugin, then started and waited for. An update backs up first and keeps the
+  previous container; an unhealthy one is undone; Remove keeps the data; Delete its data is asked twice.
+- **Its page** gains Liminal's services, Waiting for your answer (Approve…, each accept in turn; Decline…), Service plugins
+  (Let it…, Stop letting it…: the grant once per service plugin and engine) and Kept data (Forget…, asked twice). They
+  read the engines only once a service plugin asked, a grant, a plan or a work is held, more than one engine answers, or
+  the shown engine's listings name a service's container or volume; otherwise its page asks nothing more than before.
+- **Its own changes guarded**: Remove… of a service's container is refused, pointing at its owner's page (start and stop
+  stay allowed). Its own change hooks (choose_engine, container, remove_container, pull, remove_image) are its page's
+  alone (PAGE_ONLY_HOOKS: the networking design's §8.1, N1 a), and its reads are declared (READ_HOOKS: refresh, logs,
+  details).
+- **The runner**: `engines.service_run`, windowless, takes standard input, an environment laid over its own (Liminal's
+  variables and every plugin's declared pairs left out), bytes, and a file for a backup. A test's plain stand-in runner
+  has every service command refused rather than run for real.
+- Its API card names every command a service's plans run (create, cp, rename, run, exec, inspect, volume and network
+  create, inspect and rm, image inspect), each with what it is used for.
+- Tests: `test_services.py` (Docker inside Liminal-Ubuntu on the library's FakeDocker and stand-in firewall, attached to
+  a real apps.App: the exact argv through WSL, the canary secret, the stopped distribution, the guards, the conformance
+  sequence); each of its 8 gates taken out once made a test fail.
+
 ## 0.3.2 (2026-11-24)
 
 An image's pull can be cancelled, and ends when the plugin is turned off or the platform stops (the review of 2026-11-21, item 26, finding 17: its job had no Cancel, and `detach` left `docker pull` running for up to `PULL_S`, 1,800 s). `CANCEL_HOOKS = ("pull",)`, so the platform's page offers Cancel on a pull's job and its stop asks it to end; `engines.stream` takes a `stop` it looks at every 0.25 s while the command runs and, once asked, kills it (`Cancelled`); `pull` registers each pull's stop, set by `detach` and `app_stopping`, and says "cancelled" (not ok) with docker keeping the layers that came. A pull asked without a job is streamed too, so turning the plugin off ends it as well.

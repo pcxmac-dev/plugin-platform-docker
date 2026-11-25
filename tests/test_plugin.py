@@ -169,14 +169,19 @@ def plugin(state="Stopped", engine=None, distribution="Liminal-Ubuntu", clock=No
 SEARCH_FORMS = ("search", "details", "detail")  # 0.2.0: the image search's, beside the engine's
 
 
+SERVICE_TABLES = ("Liminal's services", "Waiting for your answer", "Service plugins", "Kept data")  # 0.4.0's, the base's
+SERVICE_FORMS = ("approve", "decline", "grant", "revoke", "forget")
+
+
 def engine_tables(s: dict) -> list[dict]:
-    """The tables of the engines (0.2.0: after the image search's, which comes first)."""
+    """The tables of the engines (0.2.0: after the image search's, which comes first; 0.4.0: before the services')."""
     assert s["tables"][0]["title"].startswith("Find an image")
-    return s["tables"][1:]
+    assert [t["title"] for t in s["tables"][-4:]] == list(SERVICE_TABLES)
+    return s["tables"][1:-4]
 
 
 def engine_forms(s: dict) -> list[dict]:
-    return [f for f in s["forms"] if f["id"] not in SEARCH_FORMS]
+    return [f for f in s["forms"] if f["id"] not in SEARCH_FORMS + SERVICE_FORMS]
 
 
 def at_local(*when, fmt="%b %d %H:%M") -> str:
@@ -213,7 +218,8 @@ def test_the_engines_and_the_shown_ones_containers_images_volumes_and_networks()
     assert (s["engines"], s["shown"]) == ("wsl-ubuntu: running 29.9.3", "wsl-ubuntu (Docker in Liminal-Ubuntu under WSL 2)")
     assert s["engineVersion"] == "29.9.3 · linux/amd64 · client 29.9.3"
     assert (s["containers"], s["images"], s["volumes"], s["networks"]) == ("2 running of 3", "4", "2", "4")
-    assert [t["title"] for t in s["tables"]] == ["Find an image", "Docker engines", "Containers", "Images", "Volumes", "Networks"]
+    assert [t["title"] for t in s["tables"]] == ["Find an image", "Docker engines", "Containers", "Images", "Volumes", "Networks",
+                                                 *SERVICE_TABLES]
     engines, containers, images, volumes, networks = engine_tables(s)
     assert engines["rows"][0][2:] == [{"text": "29.9.3", "sub": "client 29.9.3 · linux/amd64"}, "running"]
     assert containers["note"] == "on wsl-ubuntu (Docker in Liminal-Ubuntu under WSL 2)"
@@ -365,7 +371,8 @@ def test_no_engine_at_all_is_not_valid_and_says_how_to_have_one():
     p = DockerPlugin(find=lambda: [], runner=Docker(), wsl=Wsl(runner=FakeWsl()))
     s = p.status()
     assert (s["present"], s["valid"], s["why"], s["summary"]) == (False, False, dk.NO_ENGINE, "no Docker engine here")
-    assert [t["title"] for t in s["tables"]] == ["Find an image", "Docker engines"] and engine_tables(s)[0]["rows"] == []
+    assert [t["title"] for t in s["tables"]] == ["Find an image", "Docker engines", *SERVICE_TABLES]
+    assert engine_tables(s)[0]["rows"] == []
     assert engine_forms(s) == [] and not p.present()  # the search is still offered: Quay, Artifact Hub, the picks
     assert dk.NO_ENGINE == "no Docker engine here: install Docker Desktop, or Docker inside a WSL distribution through the WSL plugins"
     q = DockerPlugin(machines=[], runner=Docker(), wsl=Wsl(runner=FakeWsl()), env={})  # the library's docker.instances itself
@@ -398,7 +405,12 @@ def test_what_was_read_is_kept_nothing_runs_on_its_own_and_detached_it_is_forgot
     interface = p.attach(App(), None)
     assert threading.active_count() == before and run.calls == []  # attached: nothing asked yet, no thread of its own
     assert set(interface["hooks"]) == {"present", "status", "choose_engine", "refresh", "container", "remove_container", "logs",
-                                       "pull", "remove_image", "search", "details", "clear_search"}
+                                       "pull", "remove_image", "search", "details", "clear_search",
+                                       # 0.4.0: the one "run a service" interface (liminal-libs 1.93.0's ContainerHost)
+                                       "hosting", "hosted", "hosted_logs", "exposures", "plan_words", "service_work",
+                                       "service_plan", "approve_plan", "decline_plan", "apply_plan", "service_cancel",
+                                       "hosted_file", "release_owned", "grant_service", "revoke_service", "forget_volume",
+                                       "segments"}
     p.status()
     n = len(run.calls)
     t[0] += 29

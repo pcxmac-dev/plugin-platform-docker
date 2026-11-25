@@ -96,9 +96,15 @@ def test_its_cards_are_sound_and_written_for_plugin_api_2_2():
     assert p.interface()["apis"] == [a.name for a in p.apis]
 
 
-def test_the_cards_name_every_call_the_plugin_makes_and_no_other():
+def test_the_cards_name_every_call_the_plugin_makes_and_no_other(tmp_path):
     p, engine, reg = flows()
     made = {verb(a) for a in engine.asked}
+    # 0.4.0: every command a service's plans run (the library's FakeDocker records them as the plugin sends them)
+    from test_services import service_flow
+
+    for c in service_flow(tmp_path).calls:
+        words = c["argv"][c["argv"].index("docker") + 1:]
+        made.add(verb([w for w in words if w not in ("-a",)] if words[:1] == ["cp"] else words))
     # `docker context ls` is the library's (docker.instances, on this machine's docker alone: none on a test's PATH)
     assert '"context", "ls"' in inspect.getsource(library_docker.instances)
     made.add("context ls")
@@ -122,7 +128,9 @@ def test_the_cards_name_every_call_the_plugin_makes_and_no_other():
 def test_the_changes_are_marked_as_writes_and_none_costs():
     cli = card(cards.CLI)
     writes = {verb(c.name.split()[1:]) for c in cli.used if c.writes}
-    assert writes == {"start", "stop", "restart", "rm", "pull", "rmi"}
+    assert writes == {"start", "stop", "restart", "rm", "pull", "rmi",  # and since 0.4.0 a service's, in its plans alone
+                      "create", "cp", "rename", "run", "exec", "volume create", "volume rm", "network create",
+                      "network rm"}
     assert not any(c.costs for a in dk.MACHINE.apis for c in a.calls)
     assert not any(c.writes for a in dk.MACHINE.apis if a.name != cards.CLI for c in a.used)  # the registries: read only
 

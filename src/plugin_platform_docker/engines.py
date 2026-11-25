@@ -41,6 +41,45 @@ def text(raw) -> str:
     return raw.decode("utf-8", "replace")
 
 
+def _dropped(env: dict) -> dict:
+    """A child's environment without Liminal's own variables (LIMINAL_*) and without the pairs the installed plugins
+    declare (their keys: on Windows kept as user variables every process inherits), as machines/ai.py's dropped()."""
+    try:
+        from liminal_libs.sources.registry import variables
+
+        declared = set(variables() or ())
+    except Exception:  # noqa: BLE001 - a registry that cannot say: Liminal's own names still go
+        declared = set()
+    return {k: v for k, v in env.items() if not k.upper().startswith("LIMINAL_") and k not in declared}
+
+
+def service_run(args, timeout: float, stdin: bytes | None = None, env: dict | None = None, binary: bool = False,
+                out: str | None = None):
+    """A service command (the library's DockerRuntime runner), windowless: `stdin` given to it, `env` laid over its
+    environment (a secret's value travels there alone; through WSL its name in WSLENV), its output as bytes (`binary`)
+    or written to the file `out` (a backup), never this process's standard input. Liminal's own variables and every
+    plugin's declared pairs are left out of its environment, but for the values `env` hands it. (exit code, output,
+    errors)."""
+    args = [str(a) for a in args]
+    given = dict(env or {})
+    environment = {**_dropped({**os.environ, **UTF8_WSL}), **given}
+    if "WSLENV" in given and os.environ.get("WSLENV"):
+        environment["WSLENV"] = f"{os.environ['WSLENV']}:{given['WSLENV']}"
+    feed = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
+    try:
+        if out:
+            with open(out, "wb") as sink:
+                done = subprocess.run(args, stdout=sink, stderr=subprocess.PIPE, timeout=timeout, env=environment,
+                                      **feed, **no_window())
+            return done.returncode, b"", text(done.stderr)
+        done = subprocess.run(args, capture_output=True, timeout=timeout, env=environment, **feed, **no_window())
+    except subprocess.TimeoutExpired:
+        raise DockerError(f"{said(args)} took more than {timeout:g} s") from None
+    except OSError as e:
+        raise DockerError(f"{program(args[0]) if args else 'the command'} could not run: {e}") from None
+    return done.returncode, (done.stdout or b"") if binary else text(done.stdout), text(done.stderr)
+
+
 def run(args, timeout: float) -> tuple[int, str, str]:
     """`args` run without a window of its own (the platform has no console: a console child would open a Windows
     Terminal window that stays) and without this process's standard input: (exit code, output, errors). A command that

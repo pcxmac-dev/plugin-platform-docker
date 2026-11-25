@@ -6,6 +6,11 @@ whether it runs; the containers, images, volumes and networks of the engine chos
 page changes once confirmed: a container started, stopped, restarted or removed, an image pulled or removed, a
 container's last log lines read.
 
+Since 0.4.0 it hosts Liminal's services (liminal-libs 1.93.0's ContainerHost, the one "run a service" interface): a
+service plugin's plan, in Docker's own words, approved on the page; a grant once per service plugin and engine; images
+by digest; a backup before an update; each service's own network, handed out by the firewall plugin; `--restart no`;
+nothing started while its engine is off; its "page" services stopped with the platform and when it is turned off.
+
 An engine reached through WSL (`wsl -d Liminal-Ubuntu --exec docker`) is asked only while WSL lists its distribution
 running: a `wsl -d` boots a stopped one, and a look never starts it (the WSL plugins' rule, liminal-libs 1.28.0); one a
 WSL plugin offers in a distribution that is not Liminal's own is not asked at all. Nothing runs on its own: the plugin
@@ -19,7 +24,9 @@ reads again at once), holds no process and no thread between asks, and forgets w
 from __future__ import annotations
 
 import concurrent.futures
+import os
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -28,19 +35,23 @@ from datetime import datetime, timezone
 from liminal_libs import docker
 from liminal_libs.apps import EnvironmentLogin
 from liminal_libs.docker import DockerError, Instance
-from liminal_libs.machines.plugin import MachinePlugin, liminal_scoped
+from liminal_libs.machines import containers as svc
+from liminal_libs.machines.containerhost import ContainerHost, Outside
+from liminal_libs.machines.containers import Aspect, Fit, Target
+from liminal_libs.machines.dockerruntime import DockerRuntime
+from liminal_libs.machines.plugin import liminal_scoped
 from liminal_libs.machines.wsl import Wsl
 from liminal_libs.sources.keys import KeyVar
 
 from . import apis as cards
 from .catalog import PICKS
 from .engines import (STOP_S, Cancelled, Engine, anonymous, broken, created, image_ref, liminal_service, local_time, names, ports,
-                      short, span, users_of, words, wsl_target)
+                      service_run, short, span, stream, users_of, words, wsl_target)
 from .search import Outcome, Searcher, where_choices
 from .sources import SOURCES, Http, canonical, pull_ref, registry_of
 from .sources import shown as shown_ref
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 WEBSITE_VAR = "DOCKER_HUB_WEBSITE_SEARCH"  # the user's setting: Docker Hub's website search too (undocumented; off)
 KEYS = (KeyVar(WEBSITE_VAR, label="Docker Hub's website search", secret=False,
                hint=("optional: on to also ask Docker Hub's website search (undocumented: its ranking, badges and pull counts "
@@ -60,6 +71,12 @@ ACTIONS = {  # a container's change: its title, what it is said as done, the sta
     "restart": ("Restart", "restarted", "running"),
 }
 UP = ("running", "paused", "restarting")  # a container in one of these is stopped before it is removed
+ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}  # docker version's words for an architecture, as images name them
+WSL_NAT_WORDS = ("Windows reaches it at 127.0.0.1 through WSL's relay; your network does not (WSL runs in NAT mode): "
+                 "the Windows firewall's Expose… brings a port proxy for it (decision 2)")
+LINUX_WORDS = ("published on every address of this machine; Docker's own rules come before ufw's and firewalld's, so the "
+               "port is open whatever they say until firewall-linux's limit is made (decision 20)")
+DESKTOP_WORDS = "Docker Desktop publishes it on this PC's own addresses"
 
 
 class Refusal(ValueError):
@@ -186,8 +203,34 @@ def _each(fn, items) -> list:
         return list(pool.map(fn, items))
 
 
-class DockerPlugin(MachinePlugin):
-    """Docker's engines for the platform: present when any engine is known, valid when one answers."""
+class _Desktop(DockerRuntime):
+    """Docker Desktop's Linux engine: its containers cannot be routed to from Windows (its own limit: the networking
+    design's §5.3), so a service's own routed network cannot be made there yet."""
+
+    def fit(self, spec):
+        fit = super().fit(spec)
+        parts = dict(fit.parts)
+        parts["network"] = Aspect("cannot", "Docker Desktop's Linux containers cannot be routed to from Windows (its own "
+                                            "limit): a service's network cannot be made there yet")
+        return Fit.judged(parts)
+
+
+def service_of(row: dict) -> str:
+    """The service a container is (its liminal.service label, as docker ps lists labels), "" for none."""
+    labels = row.get("Labels")
+    if isinstance(labels, dict):
+        return str(labels.get("liminal.service") or "")
+    for part in str(labels or "").split(","):
+        k, _, v = part.partition("=")
+        if k.strip() == "liminal.service":
+            return v.strip()
+    return ""
+
+
+class DockerPlugin(ContainerHost):
+    """Docker's engines for the platform: present when any engine is known, valid when one answers; and since 0.4.0 the
+    one "run a service" interface (liminal-libs 1.93.0's ContainerHost) on its engines of this machine: Docker inside
+    Liminal-Ubuntu first (decision 4), through the library's DockerRuntime."""
 
     name = "docker"
     title = "Docker"
@@ -202,15 +245,20 @@ class DockerPlugin(MachinePlugin):
     order = 705
     ICON = "docker"  # Docker's whale with its containers (liminal-libs 1.33.0's icons.js)
     SECTION = "virtualization"  # drawn under the platform's Virtualization plugins (liminal-platform 0.26.0)
-    HOOKS = (*MachinePlugin.HOOKS, "choose_engine", "refresh", "container", "remove_container", "logs", "pull", "remove_image",
+    RUNTIME = "docker"
+    HOOKS = (*ContainerHost.HOOKS, "choose_engine", "refresh", "container", "remove_container", "logs", "pull", "remove_image",
              "search", "details", "clear_search")
+    READ_HOOKS = ("refresh", "logs", "details")  # its own reads, at last declared (0.4.0), beside the base's
+    # its own changes, from its page alone (0.4.0; the networking design's §8.1, N1 a): no other plugin asks them
+    PAGE_ONLY_HOOKS = ("choose_engine", "container", "remove_container", "pull", "remove_image")
     JOB_HOOKS = ("pull",)  # hooks the platform may run as a job, their lines followed on the page (liminal-platform 0.19.0)
     # a pull's job may be asked to stop (liminal-platform 0.31.0's Cancel, and its stop): its `log.cancelled` is looked at
     # while docker pull runs, which is then killed (the review of 2026-11-21, item 26, finding 17)
     CANCEL_HOOKS = ("pull",)
     keys = KEYS  # its settings, kept through the platform's login (the website search's switch)
 
-    def __init__(self, machines=None, find=None, runner=None, wsl=None, env=None, clock=None, wall=None, http=None, streamer=None):
+    def __init__(self, machines=None, find=None, runner=None, wsl=None, env=None, clock=None, wall=None, http=None, streamer=None,
+                 service_runner=None, outside: Outside | None = None):
         self._given = machines  # the machine plugins whose engines count (a test's); else the platform's enabled ones
         self._find = find  # () -> the engines (docker.Instance): docker.instances over those plugins unless given
         self._runner = runner  # (args, timeout) -> (code, out, err): engines.run (windowless) unless given
@@ -220,7 +268,12 @@ class DockerPlugin(MachinePlugin):
         self._wall = wall or time.time
         self._http = http  # the registries' requests (sources.Http; a test's stand-in opener inside): made at the first search
         self._streamer = streamer  # (args, timeout, line, stop) -> (code, errors): engines.stream (a pull's lines) unless given
+        # (args, timeout, stdin=, env=, binary=, out=) -> (code, out, err): a service's commands (0.4.0), engines.service_run
+        # unless given; a test that gives only `runner` has its service commands refused rather than run for real
+        self._service_runner = service_runner
         self._rt = _Runtime()
+        ContainerHost.__init__(self, outside or Outside(clock=self._clock, wall=self._wall, holders=self._port_holders,
+                                                        env=env))
 
     # -- the engines ---------------------------------------------------------------------------------------
     def _machines(self) -> list:
@@ -333,8 +386,10 @@ class DockerPlugin(MachinePlugin):
 
     def app_stopping(self) -> None:
         """The platform stops: a pull under way ends (the platform has asked its job already; one asked without a job
-        has no Cancel but this)."""
+        has no Cancel but this); then (0.4.0) every service work is cancelled and joined and every "page" service stopped
+        (ContainerHost)."""
         self._stop_pulls()
+        ContainerHost.app_stopping(self)
 
     def detach(self) -> None:
         """Detached (the platform ending, the plugin turned off): a pull under way ends (the review of 2026-11-21, item
@@ -412,6 +467,9 @@ class DockerPlugin(MachinePlugin):
         if puller is not None and not any(f["id"] == "pull" for f in engine_forms):  # the engine shown is not the one answering
             engine_forms.append(self._pull_form(puller.name))
         out["forms"] = self._search_forms(found, puller) + engine_forms
+        services = self.service_status()  # 0.4.0: Liminal's services, the plans waiting, the service plugins, kept data
+        out["tables"] += services.get("tables") or []
+        out["forms"] += services.get("forms") or []
         out["actions"] = [{"hook": "refresh", "args": [], "title": "Read again",
                            "note": f"asks every engine again now (what was read is kept {READ_S:g} s)"}]
         trouble = [f"{shown.name}'s {kind} could not be read: {why}" for kind, why in (r.listing.problems.items() if r.listing else ())]
@@ -819,6 +877,10 @@ class DockerPlugin(MachinePlugin):
         c = self._container_of(e, n)
         if c is None:
             raise ValueError(f"no container named {n} on {i.name}")
+        sid = service_of(c)
+        if sid:  # 0.4.0: a service's container is removed by its own plugin's Remove…, which keeps its data rules
+            raise Refusal(f"{n} is the container of Liminal's service {sid}: remove it on {sid.split('/', 1)[0]}'s page "
+                          "(its Remove… keeps its volumes and says what stays)")
         up = is_up(c)
         if up and not yes(force):
             raise Refusal(f"{n} is running on {i.name}: stop it first, or remove it anyway (it is killed first)", accept="force")
@@ -939,6 +1001,101 @@ class DockerPlugin(MachinePlugin):
             had = self._rt.found
             self._rt.found = None
         return {"said": "the search's results forgotten" if had else "no results to forget", "ok": True}
+
+    # -- the one "run a service" interface (0.4.0, liminal-libs 1.93.0's ContainerHost) ---------------------------------
+    @staticmethod
+    def _here(i: Instance) -> tuple[bool, str]:
+        """Whether an engine is this machine's (only those host services: their data would live elsewhere): Docker
+        inside Liminal's WSL distributions, this machine's docker, and a context or host whose endpoint is this
+        machine's (npipe, unix, or tcp to loopback)."""
+        if wsl_target(i.command)[0] or i.name == "local":
+            return True, ""
+        end = str(i.host or i.where or "").strip().lower()
+        if end.startswith(("npipe:", "unix:")) or re.match(r"^tcp://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?/?$", end):
+            return True, ""
+        return False, f"{i.name} is reached at {i.where}: a service's data stays on this machine (decision 13)"
+
+    def runtime_targets(self) -> list[Target]:
+        """Each engine as a target: ready while it answers; a stopped distribution's is "stopped" (a look never starts
+        it); one on another machine "not here"; a Windows engine left to the Windows containers plugin."""
+        r = self._read()
+        out = []
+        linux = sys.platform.startswith("linux")
+        for e in r.engines:
+            through, _ = wsl_target(e.instance.command)
+            v = e.version
+            system = str(v.get("os") or "linux")
+            here, why = self._here(e.instance)
+            state = "ready" if e.answering else "stopped" if e.stopped else "not answering"
+            why = why or e.why
+            if here and e.answering and system != "linux":
+                state, why = "not here", "a Windows engine: the Windows containers plugin hosts services there"
+            if not here:
+                state = "not here"
+            if through or (linux and os.environ.get("WSL_DISTRO_NAME")):
+                stack, path, words_, firewall = "wsl", "wsl-nat", WSL_NAT_WORDS, "windows"
+            elif linux:
+                stack, path, words_, firewall = "linux", "direct", LINUX_WORDS, "linux"
+            else:
+                stack, path, words_, firewall = "windows", "direct", DESKTOP_WORDS, "windows"
+            where = (f"inside {e.distribution}'s virtual disk (unregistering {e.distribution} deletes it)" if e.distribution
+                     else "in Docker Desktop's VM disk" if not linux else "in this machine's /var/lib/docker")
+            out.append(Target(id=e.name, plugin=self.name, title=f"Docker {v.get('engine', '')} in {e.instance.where}".replace("  ", " "),
+                              mechanism="docker", system=system, arch=ARCHES.get(str(v.get("arch") or ""), str(v.get("arch") or "amd64")),
+                              here=here, state=state, why=why if state != "ready" else "", reach="127.0.0.1", path=path,
+                              lan_words=words_, firewall=firewall, wsl=e.distribution if through else "",
+                              wsl_plugin=e.instance.source if through else "", stack=stack, platform=self._platform(),
+                              where_data=where, version=str(v.get("engine") or "")))
+        return out
+
+    def runtime_of(self, target: Target) -> DockerRuntime:
+        """That engine's DockerRuntime: its docker command line (through WSL, a context or a host), the service runner
+        and the streamer."""
+        seen = self._read().engine(target.id)
+        if seen is None or not seen.answering:
+            raise Refusal(f"{target.id} does not answer now: {seen.why if seen else 'it is not here'}")
+        e = self._engine(seen.instance)
+        kind = _Desktop if (target.stack == "windows" and not target.wsl) else DockerRuntime
+        return kind(e.line(), self._service_command, self._streamer or stream, version=target.version, arch=target.arch,
+                    wsl=bool(target.wsl), trusted=("eth0",) if target.stack in ("wsl", "linux") else (),
+                    lan=(target.path, target.lan_words), where_data=target.where_data)
+
+    def service_reads_wanted(self) -> bool:
+        """Whether its page reads its engines' services now: once a service plugin asked, a grant was made, a plan or a
+        work is held, more than one engine answers, or the shown engine's listings name a service's container or a
+        volume of Liminal's; otherwise its page's refreshes ask nothing more than before 0.4.0."""
+        if self._svc.plans.waiting() or self._svc.works.all() or self._svc.askers or self.grants():
+            return True
+        r = self._read()
+        if sum(1 for e in r.engines if e.answering) > 1:
+            return True
+        listing = r.listing
+        if listing is None:
+            return False
+        return (any(service_of(c) for c in listing.containers or [])
+                or any("liminal=volume" in str(v.get("Labels") or "") for v in listing.volumes or []))
+
+    def _service_command(self, argv, timeout, stdin=None, env=None, binary=False, out=None):
+        if self._service_runner is not None:
+            return self._service_runner(argv, timeout, stdin=stdin, env=env, binary=binary, out=out)
+        if self._runner is not None:  # a test's plain stand-in: what it cannot take is refused, never run for real
+            if stdin is not None or env or out:
+                raise Refusal("this stand-in runner takes no standard input, environment or file: give a service runner")
+            code, got, err = self._runner(argv, READ_S)
+            return code, (got.encode("utf-8") if binary and isinstance(got, str) else got), err
+        return service_run(argv, timeout, stdin=stdin, env=env, binary=binary, out=out)
+
+    def _port_holders(self, port: int) -> list[str]:
+        """Who listens on `port` of this machine, from its socket table (nothing is sent anywhere): each program in
+        words; [] when none, or when the table cannot be read."""
+        try:
+            from liminal_libs import resources
+            from liminal_libs.machines.modelserver import held_words, holders
+
+            held = holders(int(port), resources.default_probe())
+            return [held_words(int(port), held)] if held else []
+        except Exception:  # noqa: BLE001 - a table that cannot be read: no holder known
+            return []
 
     def remove_image(self, engine, image, force=False) -> dict:
         """An image removed (docker rmi); one a container was made from only once accepted (`force`: docker rmi --force;
