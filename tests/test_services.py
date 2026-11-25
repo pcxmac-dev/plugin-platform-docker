@@ -245,3 +245,14 @@ def test_a_plain_stand_in_runner_never_runs_a_service_command_for_real(tmp_path)
     w.docker._service_runner = None
     with pytest.raises(DockerRefusal, match="takes no standard input"):
         w.docker._service_command(["docker", "create"], 5, env={"X": "y"})
+
+
+def test_a_plan_says_where_the_engine_keeps_its_data_in_its_own_word(world):
+    # 0.4.1: docker info's DockerRootDir (liminal-libs 1.95.0's data_root, read_root on), beside the target's words
+    world.grant()
+    world.fake.root = "/mnt/wsl-data/docker"
+    plan = world.jenkins.call("service_plan", "install", "jenkins/ci", spec(), "wsl-ubuntu", {})
+    assert "virtual disk (unregistering Liminal-Ubuntu deletes it) (/mnt/wsl-data/docker)." in plan["words"]
+    info = world.fake.argv_of("info")
+    assert info and all(a[:5] == ["wsl", "-d", "Liminal-Ubuntu", "--exec", "docker"] for a in info)
+    assert set(world.fake.changes()) <= {"images"}  # a plan changes nothing (its listing of images is a read)

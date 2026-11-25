@@ -51,7 +51,7 @@ from .search import Outcome, Searcher, where_choices
 from .sources import SOURCES, Http, canonical, pull_ref, registry_of
 from .sources import shown as shown_ref
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 WEBSITE_VAR = "DOCKER_HUB_WEBSITE_SEARCH"  # the user's setting: Docker Hub's website search too (undocumented; off)
 KEYS = (KeyVar(WEBSITE_VAR, label="Docker Hub's website search", secret=False,
                hint=("optional: on to also ask Docker Hub's website search (undocumented: its ranking, badges and pull counts "
@@ -1032,14 +1032,15 @@ class DockerPlugin(ContainerHost):
                 state, why = "not here", "a Windows engine: the Windows containers plugin hosts services there"
             if not here:
                 state = "not here"
-            if through or (linux and os.environ.get("WSL_DISTRO_NAME")):
-                stack, path, words_, firewall = "wsl", "wsl-nat", WSL_NAT_WORDS, "windows"
-            elif linux:
-                stack, path, words_, firewall = "linux", "direct", LINUX_WORDS, "linux"
-            else:
-                stack, path, words_, firewall = "windows", "direct", DESKTOP_WORDS, "windows"
+            # 0.4.1: the stack as every container plugin names it (liminal-libs 1.95.0's containers.stack_of): "wsl" for
+            # any Linux inside WSL 2, "linux" for a Linux machine's own, "windows" for this PC's
+            stack = svc.stack_of(linux, bool(through or (linux and os.environ.get("WSL_DISTRO_NAME"))))
+            path, words_, firewall = {"wsl": ("wsl-nat", WSL_NAT_WORDS, "windows"),
+                                      "linux": ("direct", LINUX_WORDS, "linux"),
+                                      "windows": ("direct", DESKTOP_WORDS, "windows")}[stack]
+            # 0.4.1: where on that disk is the engine's own word (docker info's DockerRootDir), said beside it on a plan
             where = (f"inside {e.distribution}'s virtual disk (unregistering {e.distribution} deletes it)" if e.distribution
-                     else "in Docker Desktop's VM disk" if not linux else "in this machine's /var/lib/docker")
+                     else "in Docker Desktop's VM disk" if not linux else "on this machine's disk")
             out.append(Target(id=e.name, plugin=self.name, title=f"Docker {v.get('engine', '')} in {e.instance.where}".replace("  ", " "),
                               mechanism="docker", system=system, arch=ARCHES.get(str(v.get("arch") or ""), str(v.get("arch") or "amd64")),
                               here=here, state=state, why=why if state != "ready" else "", reach="127.0.0.1", path=path,
@@ -1058,7 +1059,7 @@ class DockerPlugin(ContainerHost):
         kind = _Desktop if (target.stack == "windows" and not target.wsl) else DockerRuntime
         return kind(e.line(), self._service_command, self._streamer or stream, version=target.version, arch=target.arch,
                     wsl=bool(target.wsl), trusted=("eth0",) if target.stack in ("wsl", "linux") else (),
-                    lan=(target.path, target.lan_words), where_data=target.where_data)
+                    lan=(target.path, target.lan_words), where_data=target.where_data, read_root=True)
 
     def service_reads_wanted(self) -> bool:
         """Whether its page reads its engines' services now: once a service plugin asked, a grant was made, a plan or a

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.1 (2026-11-25)
+
+On liminal-libs 1.95.0's new hooks, where Docker gains from them. Needs liminal-libs>=1.95.0.
+- **Where a service's data lives**, on each plan, in its engine's own word: `docker info`'s DockerRootDir
+  (DockerRuntime with `read_root`), beside the target's words ("inside Liminal-Ubuntu's virtual disk", "on this
+  machine's disk" in place of 0.4.0's fixed "/var/lib/docker"). Its API card names `docker info --format`.
+- **Its stack named as every container plugin names it** (1.95.0's `containers.stack_of`, decided 2026-11-25): "wsl"
+  for Docker in any Linux inside WSL 2, from either platform; "linux" for a Linux machine's own; "windows" for Docker
+  Desktop. Unchanged in effect: 0.4.0 already said "wsl" there.
+- The rest of 1.95.0 is the base's and reaches it unchanged: a secret its asker declares is handed over, an update that
+  adds a part (an agent) is its own plan, a rollback needs every part's previous container. It declares no setting of
+  yours (TARGET_SETTINGS): a Docker engine has no shared place of yours to name, and a named volume no size.
+
 ## 0.4.0 (2026-11-25)
 
 Docker hosts Liminal's services: the first implementation of liminal-libs 1.93.0's one "run a service" interface
