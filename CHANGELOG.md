@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.1 (2026-11-26)
+
+The search box's two hooks are asked only from the page. The user, 2026-11-26: "Yes, closed by default" (liminal-libs
+1.107.0: a hook a plugin declares for no one is its page's alone).
+
+- **`search` and `clear_search` are page-only** (`PAGE_ONLY_HOOKS`, beside its changes). A search sends its words to
+  Docker Hub through the engine that answers, to Quay.io and to Artifact Hub, and replaces what the page's table
+  keeps; the results forgotten empty it. Until now any plugin, and any program on this machine through the platform,
+  could ask them. Another plugin's ask and an ask that names no one are refused (403) in words, and liminal-platform
+  asks its login whether you are at the page (401 otherwise).
+- `refresh`, `logs` and `details` stay reads anyone here may ask (`READ_HOOKS`), and the command line calls the code
+  itself: that is not an ask.
+- Every hook now says who may ask it, so the library's `conformance.warnings` is empty.
+
+Tests: a search and its results forgotten refused to another plugin and to no one (no engine and no registry asked,
+the table as it was), and done for the page; a test that no hook is left undeclared. They fail when either is taken
+out of `PAGE_ONLY_HOOKS`, on liminal-libs 1.106.0 and on 1.107.0 alike. No new requirement: the word is liminal-libs
+1.66.0's.
+
 ## 0.5.0 (2026-11-25)
 
 On liminal-libs 1.97.0. Needs liminal-libs>=1.97.0.

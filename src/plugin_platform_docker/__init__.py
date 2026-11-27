@@ -51,7 +51,7 @@ from .search import Outcome, Searcher, where_choices
 from .sources import SOURCES, Http, canonical, pull_ref, registry_of
 from .sources import shown as shown_ref
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 WEBSITE_VAR = "DOCKER_HUB_WEBSITE_SEARCH"  # the user's setting: Docker Hub's website search too (undocumented; off)
 KEYS = (KeyVar(WEBSITE_VAR, label="Docker Hub's website search", secret=False,
                hint=("optional: on to also ask Docker Hub's website search (undocumented: its ranking, badges and pull counts "
@@ -252,7 +252,11 @@ class DockerPlugin(ContainerHost):
     PLUGIN_ONLY_HOOKS = ContainerHost.RUN_HOOKS
     READ_HOOKS = ("refresh", "logs", "details")  # its own reads, at last declared (0.4.0), beside the base's
     # its own changes, from its page alone (0.4.0; the networking design's §8.1, N1 a): no other plugin asks them
-    PAGE_ONLY_HOOKS = ("choose_engine", "container", "remove_container", "pull", "remove_image")
+    # 0.5.1 (the user, 2026-11-26: "Yes, closed by default"): the search box's two with them. A search sends its words
+    # to Docker Hub through the engine, to Quay and to Artifact Hub and replaces what the page's table keeps; the
+    # results forgotten empty it: both a choice of the person at the page. With them every hook says who may ask it
+    # (liminal-libs 1.107.0's conformance.warnings is empty)
+    PAGE_ONLY_HOOKS = ("choose_engine", "container", "remove_container", "pull", "remove_image", "search", "clear_search")
     JOB_HOOKS = ("pull",)  # hooks the platform may run as a job, their lines followed on the page (liminal-platform 0.19.0)
     # a pull's job may be asked to stop (liminal-platform 0.31.0's Cancel, and its stop): its `log.cancelled` is looked at
     # while docker pull runs, which is then killed (the review of 2026-11-21, item 26, finding 17)

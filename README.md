@@ -29,6 +29,8 @@ library's icons.js has no box yet) over the library's `docker.py`:
   (as plain text) and its newest tags with their dates, sizes and platforms; **Pull…** pulls it as a job, docker's lines
   shown as they come (liminal-platform 0.19.0). A compose stack (mailcow, Mailu) is listed with its install page, never
   pulled. Docker Hub's website search (undocumented) is asked only when the setting DOCKER_HUB_WEBSITE_SEARCH is on.
+  Since 0.5.1 a search and its results forgotten (`search`, `clear_search`) are asked only from the page
+  (`PAGE_ONLY_HOOKS`): another plugin's ask and an ask that names no one are refused, nothing sent to a registry.
 - **The changes**, each through a form the page confirms first: a container started, stopped (given 20 s to end on its
   own, then killed) or restarted; a container removed (its image and volumes stay; a running one only once accepted
   again: it is killed first); an image pulled; an image removed (one a container was made from only once accepted

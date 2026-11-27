@@ -598,3 +598,81 @@ def test_the_streaming_runner_runs_windowless_gives_each_line_and_is_killed_when
     with pytest.raises(Exception, match="took more than 0.2 s"):
         eng.stream(["docker", "pull", "big"], 0.2, lambda s: None)
     assert Hung.me.killed
+
+
+# -- 0.5.1: who may ask the search box's two (the user, 2026-11-26: "Yes, closed by default") ------------------------------
+SEARCH_BOX = ("search", "clear_search")
+
+
+def test_a_search_and_its_results_forgotten_are_asked_only_from_the_page():
+    """Another plugin's ask and an ask that names no one are refused: no engine and no registry asked, the page's table
+    as it was. The page's own ask searches, and forgets, as before. Asked through the library's own App, whose ask
+    names who asks as the platform's does."""
+    asking = pytest.importorskip("liminal_libs.apps.asking", reason="no hook is asked only from its page before liminal-libs 1.66.0")
+    from liminal_libs import internal
+    from liminal_libs.apps import App
+    from liminal_libs.machines.plugin import MachinePlugin
+
+    class Neighbour(MachinePlugin):
+        name, title = "neighbour", "Neighbour"
+
+        def wants(self, hook, *args):
+            """Not a hook: one of Docker's asked through the app."""
+            return self.app.ask("docker", hook, *args)
+
+    class Platform(App):
+        NAME, TITLE, ICON = "platform", "Platform", "chip"
+
+        def from_page(self, hook, *args):
+            with asking.asking(asking.PAGE):
+                return self.ask("docker", hook, *args)
+
+    p, engine, reg = page_plugin()
+    assert set(SEARCH_BOX) <= set(internal.page_only(p)) and not set(SEARCH_BOX) & set(internal.declared(p, "READ_HOOKS"))
+    for hook in SEARCH_BOX:
+        assert asking.refusal(p, hook, asking.PAGE) == ""
+        assert asking.refusal(p, hook, "neighbour") == (f"docker's {hook} is asked only from its page, never by another "
+                                                        "plugin: neighbour asked it.")
+        assert asking.refusal(p, hook, None).endswith("This ask names no asker: neither the page nor a plugin.")
+    app, neighbour = Platform(log=lambda m: None, login=p.login), Neighbour()
+    app.attach(p)
+    app.attach(neighbour)
+    try:
+        p.login = Login()  # the stand-in's one setting, as page_plugin gave it
+        p.status()
+        asked, sent = len(engine.asked), len(reg.asked)
+        for ask in (lambda: neighbour.wants("search", "nginx webserver", "all"), lambda: app.ask("docker", "search", "nginx webserver")):
+            with pytest.raises(asking.AskRefused, match="docker's search is asked only from its page") as refused:
+                ask()
+            assert refused.value.status == 403 and refused.value.hook == "search"
+        assert not any(a[0] == "search" for a in engine.asked[asked:]) and len(reg.asked) == sent  # nothing sent anywhere
+        assert p.status()["tables"][0]["rows"] == []
+        assert app.from_page("search", "nginx webserver", "all")["said"].startswith("9 images for")
+        assert len(p.status()["tables"][0]["rows"]) == 9 and len(reg.asked) > sent
+        for ask in (lambda: neighbour.wants("clear_search"), lambda: app.ask("docker", "clear_search")):
+            with pytest.raises(asking.AskRefused, match="docker's clear_search is asked only from its page") as refused:
+                ask()
+            assert refused.value.status == 403 and refused.value.hook == "clear_search"
+        assert len(p.status()["tables"][0]["rows"]) == 9  # kept
+        assert neighbour.wants("details", "nginx")["said"] == "Details of nginx (Docker Hub)"  # a read, as before
+        assert app.from_page("clear_search")["ok"] and p.status()["tables"][0]["rows"] == []
+    finally:
+        app.detach(neighbour.name)
+        app.detach(p.name)
+
+
+def test_no_hook_is_left_undeclared():
+    """0.5.1, closed by default (liminal-libs 1.107.0): every hook it adds says who may ask it, so none is left to the
+    default and the library's conformance has no warning. Its own are read from its words, so that part holds on an
+    older library, whose bases may say less."""
+    from liminal_libs import internal
+    from liminal_libs.machines.containerhost import ContainerHost
+    from liminal_libs.sources import conformance
+
+    p = page_plugin()[0]
+    said = {h for word in ("READ_HOOKS", "SERVICE_HOOKS", "PLUGIN_ONLY_HOOKS", "PAGE_ONLY_HOOKS")
+            for h in internal.declared(p, word)} | {t.as_dict()["hook"] for t in getattr(p, "TABS", ())}
+    own = [h for h in DockerPlugin.HOOKS if h not in ContainerHost.HOOKS]
+    assert set(own) >= {"choose_engine", "refresh", "logs", "details", *SEARCH_BOX} and [h for h in own if h not in said] == []
+    warnings = getattr(conformance, "warnings", None)  # liminal-libs 1.107.0
+    assert warnings is None or warnings(p) == []
